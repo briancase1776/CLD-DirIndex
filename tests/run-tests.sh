@@ -264,6 +264,51 @@ expect_rc   "exempted .cld passes (exit 0)" 0 "$rc"
 rm -rf "$d"
 
 echo ""
+echo "shipped cld.conf"
+echo "----------------"
+
+# The repo ships a real cld.conf, not a sample: it is what a host repo
+# copies, and this repo runs on it. These guard the two ways that goes
+# wrong -- it stops parsing, or it drifts out of sync with the fallback
+# defaults in cld-config.sh (a key added to one and not the other means
+# an adopter silently gets a default they cannot see in their config).
+
+if sh -n "$TOOLKIT/cld.conf" 2>/dev/null; then
+  ok "the shipped cld.conf parses"
+else
+  bad "the shipped cld.conf parses" "sh -n rejected it"
+fi
+
+conf_keys=$(grep -o '^CLD_[A-Z_]*=' "$TOOLKIT/cld.conf" | sort -u)
+def_keys=$(grep -o '^CLD_[A-Z_]*=' "$TOOLKIT/scripts/cld-config.sh" | sort -u)
+missing=$(printf '%s\n' "$def_keys" | grep -vxF "$conf_keys" || true)
+extra=$(printf '%s\n' "$conf_keys" | grep -vxF "$def_keys" || true)
+if [ -z "$missing" ]; then
+  ok "every default in cld-config.sh appears in cld.conf"
+else
+  bad "every default in cld-config.sh appears in cld.conf" \
+      "absent from cld.conf: $(echo "$missing" | tr '\n' ' ')"
+fi
+if [ -z "$extra" ]; then
+  ok "cld.conf defines no key the loader ignores"
+else
+  bad "cld.conf defines no key the loader ignores" \
+      "unknown to cld-config.sh: $(echo "$extra" | tr '\n' ' ')"
+fi
+
+# ...and a fixture carrying the shipped conf verbatim still runs clean.
+d=$(fixture)
+cp "$TOOLKIT/cld.conf" "$d/cld.conf"
+mkdir -p "$d/lib"
+printf 'INDEX lib/\nF a.js       First\n' > "$d/lib/index.cld"
+echo '// a' > "$d/lib/a.js"
+git -C "$d" add -A >/dev/null 2>&1
+out=$(cd "$d" && sh scripts/index-audit/check.sh lib/ 2>&1); rc=$?
+expect_hit "a repo using the shipped conf verbatim is clean" "index-audit: clean" "$out"
+expect_rc  "shipped conf exits 0 on a clean tree" 0 "$rc"
+rm -rf "$d"
+
+echo ""
 echo "pre-commit gate"
 echo "---------------"
 

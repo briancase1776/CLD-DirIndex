@@ -2,7 +2,7 @@ INDEX ./
 F README.md            What a .cld file is, what is in the box, the three layers
 F INSTALL.md           Adopting the toolkit in another repository
 F CLAUDE.md            Working rules for this repo; narrow scope is the point
-F cld.conf.example     Every project-specific value, copy to cld.conf and edit
+F cld.conf             Shipped default config, copied into a host repo and edited there
 D spec/                The two index format specs
 D scripts/             The checkers, the shared config loader, the git hooks
 D rules/               Snippets to paste into a host repo

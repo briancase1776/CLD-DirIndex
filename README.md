@@ -51,7 +51,7 @@ Full rules: [`spec/dir-index-format.txt`](spec/dir-index-format.txt) and
 | `scripts/git-hooks/` | Pre-commit dispatcher, the two gates, and the installer |
 | `.claude/skills/` | `index-find`, `filename-find`, `filename-dupecheck`, `index-audit-partial` |
 | `rules/` | The CLAUDE.md block and settings fragment to paste into a host repo |
-| `cld.conf.example` | Every project-specific value, in one place outside the checkers |
+| `cld.conf` | The shipped default config -- every project-specific value, in one place outside the checkers |
 | `tests/run-tests.sh` | 47 assertions over throwaway git fixtures |
 
 ## The three layers
@@ -128,6 +128,17 @@ To adopt it in another repository, see [INSTALL.md](INSTALL.md).
 
 Both checkers are POSIX `/bin/sh` with no bashisms and no GNU-only
 flags. Everything project-specific -- vendored trees, indexable
-extensions, extra `.cld` species, the brief marker -- lives in
-`cld.conf` at the host repo's root, never in a checker. Copy
-`cld.conf.example` and edit.
+extensions, extra `.cld` species -- lives in `cld.conf` at the host
+repo's root, never in a checker.
+
+`cld.conf` is shipped as a real, active config rather than a sample:
+copy it into the host repo and edit values in place. This repo runs on
+it, so the defaults you copy are the ones exercised by every check and
+every test run here, and the suite fails if it drifts out of sync with
+the fallback defaults in `scripts/cld-config.sh`. A repo with no
+`cld.conf` at all still works on those fallbacks -- but a repo of any
+size will want one.
+
+The setting to get right first is `CLD_EXTRA_SPECIES`. If your repo
+mints its own `.cld` species, declare them before the first run or
+symbol-audit reports every one of those files as a bad header.
