@@ -55,9 +55,10 @@ RULES
     leaked accessor prefix, and the checker rejects it.
   - A missing brief is a SOURCE defect, not an index defect. Use the
     brief as the primary source for the description when it exists;
-    when it does not, write the description from the code and let the
-    symbol-audit checker report the gap (SYM-BRIEF, a warning). No
-    hand-maintained marker.
+    when it does not, write the description from the code and move on.
+    No hand-maintained marker, and no checker finding -- documentation
+    coverage is a question about source, and answering it is not this
+    toolkit's job.
   - The description has no length limit. .cld files are machine-read
     and are exempt from any project column limit. The test is not
     brevity, it is that every clause is load-bearing -- design

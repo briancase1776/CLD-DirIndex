@@ -225,21 +225,21 @@ expect_hit "SYM-KEY catches an unbalanced paren" "unbalanced parenthesis" "$out"
 expect_rc  "SYM-KEY blocks (exit 1)" 1 "$rc"
 rm -rf "$d"
 
-# --- SYM-BRIEF warns, never blocks ---
+# --- documentation coverage is NOT this tool's business ---
+# The version this was extracted from warned (SYM-BRIEF) when a symbol
+# had no @brief above its declaration. It was removed as out of scope:
+# doc coverage is a fact about source, not about whether the index is
+# telling the truth. This asserts it stays gone -- an undocumented
+# target must produce no finding at all.
 d=$(fixture)
 mkdir -p "$d/lib"
 printf 'class Thing {\n  load() {}\n}\n' > "$d/lib/thing.js"
 printf 'FILE lib/thing.js\nC Thing         A class\nF Thing.load    Loads it\n' > "$d/lib/thing.js.cld"
 git -C "$d" add -A >/dev/null 2>&1
 out=$(cd "$d" && sh scripts/symbol-audit/check.sh lib/thing.js.cld 2>&1); rc=$?
-expect_hit "SYM-BRIEF warns on a missing brief" "SYM-BRIEF" "$out"
-expect_rc  "SYM-BRIEF does not block (exit 0)" 0 "$rc"
-
-# ...and goes quiet once the brief is there
-printf '/** @brief A class */\nclass Thing {\n  /** @brief Loads it */\n  load() {}\n}\n' > "$d/lib/thing.js"
-git -C "$d" add -A >/dev/null 2>&1
-out=$(cd "$d" && sh scripts/symbol-audit/check.sh lib/thing.js.cld 2>&1); rc=$?
-expect_miss "SYM-BRIEF quiet once the brief exists" "SYM-BRIEF" "$out"
+expect_miss "no doc-coverage finding on an undocumented target" "BRIEF" "$out"
+expect_hit  "an honest index over undocumented source is clean" "symbol-audit: clean" "$out"
+expect_rc   "undocumented target does not block (exit 0)" 0 "$rc"
 rm -rf "$d"
 
 # --- SYM-MISS warns on a declaring source with no index ---

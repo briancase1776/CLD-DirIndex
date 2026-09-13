@@ -20,11 +20,6 @@
 # blocking with SYM-HDR. FILE and INDEX are always accepted.
 # CLD_EXTRA_SPECIES="SESSION CAPTURE MODES ==="
 
-# The brief marker and how far above a declaration to look for it.
-# CLD_BRIEF_MARKER='@brief'
-# CLD_BRIEF_LOOKBACK=30
-# CLD_BRIEF_EXTS="js"
-
 # SYM-MISS: which sources should have a symbol index, what counts as a
 # declaration, and what to leave alone.
 # CLD_SYM_MISS_EXTS="js"

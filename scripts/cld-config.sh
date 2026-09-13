@@ -38,16 +38,6 @@ CLD_NOT_SYMBOL_INDEX_RE=''
 # here, space separated, or SYM-HDR will block on them.
 CLD_EXTRA_SPECIES=""
 
-# The in-source brief marker SYM-BRIEF looks for above a declaration,
-# and how far above it to look.
-CLD_BRIEF_MARKER='@brief'
-CLD_BRIEF_LOOKBACK=30
-
-# Target extensions the SYM-BRIEF source scan understands. The scan
-# reads the target file, so it only runs for languages whose comment
-# shape it can skip; leave it at js unless you have checked.
-CLD_BRIEF_EXTS="js"
-
 # SYM-MISS (warn): a source file that declares symbols but has no
 # <file>.cld beside it. The extensions to consider, the ERE that counts
 # as a declaration, and the trees to leave alone.

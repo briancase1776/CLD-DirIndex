@@ -16,11 +16,12 @@ FORMAT
 
 RULES
   - One entry per file/subdir; skip generated files and build artifacts.
-  - All files should carry a brief marker at the top (@brief by
-    default -- see CLD_BRIEF_MARKER in cld.conf). Use it as the primary
-    source when writing the description. If it is missing, append
-    [NO BRIEF] to the entry and ask. [NO BRIEF] entries are greppable --
-    do not remove until the brief is added.
+  - Where a file carries a brief marker at the top (conventionally
+    @brief), use it as the primary source when writing the description.
+    If it is missing, append [NO BRIEF] to the entry and ask. [NO BRIEF]
+    entries are greppable -- do not remove until the brief is added.
+    Nothing mechanical checks this: a missing brief is a defect in the
+    source file, not in the index.
   - Write the shortest accurate description possible. If it still
     needs more than one clause, leave it -- that flags the file for
     splitting. Don't force it short and don't pad to fill it out.

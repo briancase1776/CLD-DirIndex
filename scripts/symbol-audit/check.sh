@@ -54,13 +54,17 @@
 #            unbalanced parenthesis, or a DUPLICATE field-2 within
 #            the same index (the uniqueness the spec's qualification
 #            rule exists to guarantee).
-#   SYM-BRIEF [warn] an entry whose symbol has no brief marker within
-#            CLD_BRIEF_LOOKBACK lines above its declaration in source.
-#            Never blocks: a missing brief is a SOURCE defect the index
-#            just surfaces. Skips R entries (placeholders name no
-#            symbol) and targets outside CLD_BRIEF_EXTS.
 #   SYM-MISS [warn] a checked source file that declares a class or
 #            function but has no <name>.cld beside it. Never blocks.
+#
+# DELIBERATELY NOT CHECKED: whether the TARGET's symbols carry doc
+# comments. Documentation coverage is a fact about source, not about
+# whether this index tells the truth -- an index checker that reads the
+# index only to get a list of names to go inspect source with has
+# stopped checking the index. The source repo's version did this
+# (SYM-BRIEF) and it drowned every real finding 24:1, at a 100% false
+# positive rate. `grep -L '@brief'` answers the coverage question
+# better, and is not this tool's job.
 
 set -u
 
@@ -192,35 +196,6 @@ while IFS= read -r f; do
         END { exit bad }
       ' "$repo/$f" || printf 'x' >> "$BLOCK"
 
-      # SYM-BRIEF: only for targets whose comment shape the scan knows.
-      text=$(ext_of "$target")
-      for x in $CLD_BRIEF_EXTS; do
-        [ "$text" = "$x" ] || continue
-        [ -f "$repo/$target" ] || continue
-        awk -v f="$f" -v tgt="$target" -v mark="$CLD_BRIEF_MARKER" \
-            -v back="$CLD_BRIEF_LOOKBACK" '
-          NR == FNR { a[NR] = $0; nsrc = NR; next }
-          $1 ~ /^[A-CE-QS-Z]$/ {
-            name = $2; sub(/^.*\./, "", name)
-            decl = 0; i = 1
-            while (decl == 0 && i <= nsrc) {
-              if (index(a[i], name) > 0 && a[i] !~ /^[ \t]*(\*|\/\/)/)
-                decl = i
-              i++
-            }
-            if (decl > 0) {
-              ok = 0; i = (decl > back ? decl - back : 1)
-              while (ok == 0 && i <= decl) {
-                if (index(a[i], mark) > 0) ok = 1
-                i++
-              }
-              if (!ok)
-                print "SYM-BRIEF (warn) " f ": " $2 " has no " mark \
-                      " near its declaration (" tgt ":" decl ")"
-            }
-          }
-        ' "$repo/$target" "$repo/$f"
-      done
   elif [ "$known" -eq 0 ]; then
       echo "SYM-HDR  $f: unknown line-1 token '$tok'" \
            "(expected FILE <path> for a symbol index)"

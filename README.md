@@ -47,7 +47,7 @@ Full rules: [`spec/dir-index-format.txt`](spec/dir-index-format.txt) and
 |---|---|
 | `spec/` | The two format specs -- the authority on how an index is written |
 | `scripts/index-audit/check.sh` | Directory-index checker: ORPHAN, NOENTRY, BADHDR |
-| `scripts/symbol-audit/check.sh` | Symbol-index checker: SYM-DEAD, SYM-NAME, SYM-DUP, SYM-HDR, SYM-KEY, SYM-BRIEF, SYM-MISS |
+| `scripts/symbol-audit/check.sh` | Symbol-index checker: SYM-DEAD, SYM-NAME, SYM-DUP, SYM-HDR, SYM-KEY, SYM-MISS |
 | `scripts/git-hooks/` | Pre-commit dispatcher, the two gates, and the installer |
 | `.claude/skills/` | `index-find`, `filename-find`, `filename-dupecheck`, `index-audit-partial` |
 | `rules/` | The CLAUDE.md block and settings fragment to paste into a host repo |
@@ -80,11 +80,38 @@ Symbol indexes (`scripts/symbol-audit/check.sh`):
 - `SYM-DUP` **blocks** -- two indexes claim one target
 - `SYM-HDR` **blocks** -- unknown line-1 species
 - `SYM-KEY` **blocks** -- field 2 is not a usable lookup key
-- `SYM-BRIEF` *warns* -- no brief marker near a symbol's declaration
 - `SYM-MISS` *warns* -- a declaring source file with no symbol index
 
 Blocking findings are the ones that cannot false-positive or are scoped
 so tightly they may as well not. Everything judgment-shaped warns.
+
+## What this toolkit deliberately does not check
+
+**Whether your source is documented.** The version this was extracted
+from carried a `SYM-BRIEF` warning: for every entry in a symbol index it
+went into the source file, found the symbol's declaration, and warned if
+there was no `@brief` comment above it.
+
+It was removed, and the reason is worth keeping. Documentation coverage
+is a fact about *source*. A checker that reads an index only to get a
+list of names to go inspect source with has stopped checking the index.
+The spec said as much in its own rule -- "a missing brief is a SOURCE
+defect, not an index defect" -- and the check ran anyway.
+
+The cost was not theoretical. On the corpus it came from it produced 315
+of 329 findings, burying the 13 that were real, at a **100% false
+positive rate**: every warning named a file that did contain `@brief`.
+It matched substrings rather than declarations, so a symbol whose name
+appeared in its own filename resolved to line 1 of the header comment;
+and it did not recognise fields documented `@private @type {...}` as
+documented at all.
+
+`grep -L '@brief'` answers the coverage question better, in one line,
+when you actually want to ask it.
+
+An index checker checks whether the index is telling the truth. That is
+the whole remit, and keeping it that narrow is why this repo exists
+apart from the one it came from.
 
 ## Quick start
 
