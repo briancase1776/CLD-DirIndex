@@ -1,0 +1,37 @@
+# cld.conf -- per-repo overrides for the .cld checkers.
+# Copy to the root of the host repo as `cld.conf` and edit. Every value
+# is optional; scripts/cld-config.sh supplies a default for each.
+# This file is SOURCED by /bin/sh -- shell syntax, no exports needed.
+
+# Trees that legitimately carry no index (grep BRE, alternate with \|).
+# Add your vendored and generated paths here. This list is the SINGLE
+# place a "do not index this" decision is recorded -- if a file is not
+# skipped here, its absence from its dir's index.cld is a real
+# violation, not a judgment call.
+# CLD_SKIP_RE='\.git/\|node_modules/\|vendor/\|third_party/\|lib/sqlite/'
+
+# Extensions a directory index must list.
+# CLD_INDEXABLE_EXTS="js md txt html css json sh py rb go"
+
+# index.cld files that are not directory indexes (same name, other format).
+# CLD_NOT_DIR_INDEX_RE='docs/sessions/index\.cld$'
+
+# Extra line-1 species tokens symbol-audit should accept instead of
+# blocking with SYM-HDR. FILE and INDEX are always accepted.
+# CLD_EXTRA_SPECIES="SESSION CAPTURE MODES ==="
+
+# The brief marker and how far above a declaration to look for it.
+# CLD_BRIEF_MARKER='@brief'
+# CLD_BRIEF_LOOKBACK=30
+# CLD_BRIEF_EXTS="js"
+
+# SYM-MISS: which sources should have a symbol index, what counts as a
+# declaration, and what to leave alone.
+# CLD_SYM_MISS_EXTS="js"
+# CLD_DECL_RE='^[[:space:]]*class |^function |^[[:space:]]*def '
+# CLD_SYM_MISS_SKIP_RE='tests/\|vendor/'
+
+# .cld files with a FILE header that are NOT symbol indexes -- another
+# domain that borrowed the token. Exempted from symbol-audit and from
+# the symbol lookup skills.
+# CLD_NOT_SYMBOL_INDEX_RE='^notes/the-plan.*\.cld$'

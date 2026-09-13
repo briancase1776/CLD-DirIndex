@@ -1,0 +1,43 @@
+<!--
+  Paste this block into the host repo's CLAUDE.md. It is the RULE half of
+  the .cld toolkit -- the half nothing mechanical can enforce. The
+  checkers catch a stale index; only the rule makes an agent CHECK an
+  index before hunting, and update one in the same commit.
+
+  Adjust the paths if you vendored the toolkit somewhere other than the
+  repo root.
+-->
+
+## Directory Indexes
+
+Each directory has an `index.cld` describing its contents.
+Format and rules: `spec/dir-index-format.txt`.
+
+- When looking for a file, check `index.cld` in the relevant directory
+  first -- or run the `index-find` skill, which greps every index at
+  once.
+- When working in a directory that has no `index.cld`, create one
+  before finishing.
+- Keep `index.cld` current: update it in the same commit when you add,
+  remove, rename, or edit a file in that directory.
+
+## Symbol Indexes
+
+Each source file has a `<filename>.cld` symbol index in the same
+directory. Format and rules: `spec/file-index-format.txt`.
+
+- When looking for a method, class, or API, check `<filename>.cld`
+  before grepping source -- or run the `filename-find` skill.
+- Before naming a new symbol, run `filename-dupecheck` on the name.
+- Keep `<filename>.cld` current: update it in the same commit when you
+  add, remove, rename, or change the signature or behaviour of any
+  symbol.
+
+## The Gate
+
+`scripts/git-hooks/pre-commit` runs both index checkers over the staged
+diff and blocks a commit whose indexes have gone stale. Install it once
+per clone with `./scripts/git-hooks/install.sh`. Run
+`index-audit-partial` before committing to see a block coming.
+
+There is no sanctioned bypass. The rule is fix the index.

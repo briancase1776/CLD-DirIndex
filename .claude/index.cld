@@ -1,0 +1,3 @@
+INDEX .claude/
+F settings.json   SessionStart hook: reinstall the git hooks every session
+D skills/         The .cld lookup and audit skills

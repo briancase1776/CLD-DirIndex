@@ -1,0 +1,21 @@
+{
+  "_comment": [
+    "Claude Code settings fragment for a host repo that vendored the .cld",
+    "toolkit. Merge the hooks block into the repo's .claude/settings.json.",
+    "SessionStart reinstalls the git hooks on every session, so a fresh",
+    "clone is gated from its first commit without anyone remembering to",
+    "run the installer."
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/scripts/git-hooks/install.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

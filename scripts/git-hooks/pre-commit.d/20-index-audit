@@ -1,0 +1,16 @@
+#!/bin/sh
+# @brief Index-audit gate: run scripts/index-audit/check.sh on the staged
+# files passed as positional args by the pre-commit dispatcher.
+#
+# Blocks the commit when a staged index.cld is out of sync with its
+# directory -- ORPHAN (entry names a missing target) or NOENTRY (an
+# indexable file has no entry). BADHDR prints as a warning and does not
+# block.
+
+repo=$(git rev-parse --show-toplevel)
+checker="$repo/scripts/index-audit/check.sh"
+
+[ -x "$checker" ] || exit 0
+[ "$#" -eq 0 ] && exit 0
+
+"$checker" "$@"

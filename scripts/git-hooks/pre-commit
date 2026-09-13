@@ -1,0 +1,50 @@
+#!/bin/sh
+# @brief Pre-commit dispatcher: run every executable in
+# scripts/git-hooks/pre-commit.d/ in lexical order.
+#
+# Each check receives the list of staged file paths (ACM filter) as
+# positional args. Any check returning non-zero blocks the commit; all
+# checks run regardless so the user sees every failure in one pass.
+#
+# To add a check: drop an executable file into pre-commit.d/ named
+# NN-name where NN controls ordering. Number with tens-spacing so
+# new checks can be inserted between existing ones.
+#
+# There is no sanctioned bypass. git's own --no-verify skips hooks
+# entirely and cannot be refused from here, but the rule is fix the
+# violations -- so this hook does not advertise it.
+
+repo=$(git rev-parse --show-toplevel)
+dispatch_dir="$repo/scripts/git-hooks/pre-commit.d"
+
+[ -d "$dispatch_dir" ] || exit 0
+
+# Build staged file list once; pass to each check as args.
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+set --
+IFS='
+'
+for f in $staged; do
+  [ -f "$f" ] && set -- "$@" "$f"
+done
+unset IFS
+
+overall=0
+for check in "$dispatch_dir"/*; do
+  [ -x "$check" ] || continue
+  "$check" "$@"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    overall=$rc
+  fi
+done
+
+if [ "$overall" -ne 0 ]; then
+  echo ""
+  echo "BLOCKED: one or more pre-commit checks failed."
+  echo "  fix the violations above -- you own every violation in a"
+  echo "  file you commit, not only the ones you introduced."
+  echo ""
+fi
+
+exit $overall

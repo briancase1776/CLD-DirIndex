@@ -1,0 +1,2 @@
+INDEX tests/
+F run-tests.sh   Fixture-based suite asserting every finding code fires and stays quiet correctly

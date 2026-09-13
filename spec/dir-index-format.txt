@@ -1,0 +1,52 @@
+Directory Index Format
+======================
+
+PURPOSE
+  Instructs Claude how to write and maintain a directory index file.
+  Lives in spec/dir-index-format.txt -- do not copy into index files.
+
+FILE
+  Named index.cld, placed in the directory it describes.
+
+FORMAT
+  Line 1 : INDEX <path/>
+  Lines 2+: <T> <name>    <description>
+
+  T = F (file) or D (subdirectory, trailing slash on name)
+
+RULES
+  - One entry per file/subdir; skip generated files and build artifacts.
+  - All files should carry a brief marker at the top (@brief by
+    default -- see CLD_BRIEF_MARKER in cld.conf). Use it as the primary
+    source when writing the description. If it is missing, append
+    [NO BRIEF] to the entry and ask. [NO BRIEF] entries are greppable --
+    do not remove until the brief is added.
+  - Write the shortest accurate description possible. If it still
+    needs more than one clause, leave it -- that flags the file for
+    splitting. Don't force it short and don't pad to fill it out.
+  - No semicolons -- a description that needs one flags a file to audit
+    for splitting.
+  - No quotes. No trailing period.
+  - Align all descriptions to the same column within the file.
+  - Omit files whose purpose is obvious from the directory name alone.
+  - Keep this index current: when you add, remove, rename, or edit a
+    file in this directory, update the index in the same commit.
+
+NAMES WITH SPACES
+  An entry name may contain single spaces ("Tree Palette.html"). The
+  description is separated from the name by TWO OR MORE spaces -- that
+  gap, not a column rule, is what the checker splits on.
+
+ENFORCEMENT
+  scripts/index-audit/check.sh reads this format mechanically. It blocks
+  a commit on ORPHAN (an entry names a missing target) and on NOENTRY
+  (an indexable file has no entry), and warns on BADHDR (line 1 is not
+  "INDEX <path/>"). The skip list in cld.conf is the SINGLE place a
+  "do not index this" decision is recorded.
+
+EXAMPLE
+  INDEX lib/
+  F cache.js           In-memory result cache over SQLite; mutex-guarded writes
+  F errors.js          Error and perf logging; see notes/errors.md
+  F interceptor.js     Intercepts outbound XHR; 9 endpoint handlers
+  D utils/             Low-level shared helpers

@@ -1,0 +1,2 @@
+INDEX scripts/symbol-audit/
+F check.sh    Symbol-index checker (SYM-DEAD SYM-NAME SYM-DUP SYM-HDR SYM-KEY block, SYM-BRIEF SYM-MISS warn)

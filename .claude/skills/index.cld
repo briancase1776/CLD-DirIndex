@@ -1,0 +1,5 @@
+INDEX .claude/skills/
+D index-find/            Find a file or dir through the directory indexes
+D index-audit-partial/   Run the directory-index gate over the staged diff on demand
+D filename-find/         Find which file defines a symbol through the symbol indexes
+D filename-dupecheck/    Check whether a symbol name is already taken before naming

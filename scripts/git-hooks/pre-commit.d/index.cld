@@ -1,0 +1,3 @@
+INDEX scripts/git-hooks/pre-commit.d/
+F 20-index-audit    Runs the directory-index checker over the staged diff
+F 30-symbol-audit   Runs the symbol-index checker over the staged diff
