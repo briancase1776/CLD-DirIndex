@@ -1,3 +1,2 @@
 INDEX spec/
 F dir-index-format.txt   How to write and maintain index.cld, a directory index
-F file-index-format.txt  How to write and maintain <file>.cld, a symbol index

@@ -12,17 +12,20 @@ cp -R /path/to/CLD-DirIndex/spec            spec/
 cp -R /path/to/CLD-DirIndex/scripts         scripts/
 cp -R /path/to/CLD-DirIndex/.claude/skills/index-find          .claude/skills/
 cp -R /path/to/CLD-DirIndex/.claude/skills/index-audit-partial .claude/skills/
-cp -R /path/to/CLD-DirIndex/.claude/skills/filename-find       .claude/skills/
-cp -R /path/to/CLD-DirIndex/.claude/skills/filename-dupecheck  .claude/skills/
 cp    /path/to/CLD-DirIndex/cld.conf          cld.conf
 ```
 
 If the host repo already has a `scripts/` tree, copy only
-`scripts/cld-config.sh`, `scripts/index-audit/`, `scripts/symbol-audit/`
-and `scripts/git-hooks/`. The pre-commit dispatcher is drop-in by
-design: it runs everything executable in `scripts/git-hooks/pre-commit.d/`
-in lexical order, so an existing check tree survives untouched. Adjust
+`scripts/cld-config.sh`, `scripts/index-audit/` and
+`scripts/git-hooks/`. The pre-commit dispatcher is drop-in by design: it
+runs everything executable in `scripts/git-hooks/pre-commit.d/` in
+lexical order, so an existing check tree survives untouched. Adjust
 `spec/` paths in the rule block if you vendor the specs elsewhere.
+
+Adopting [CLD-FileIndex](https://github.com/briancase1776/CLD-FileIndex)
+as well? Its `scripts/git-hooks/pre-commit` is byte-identical to this
+one by contract, so copy either -- then both `20-index-audit` and
+`30-symbol-audit` sit in `pre-commit.d/` and run in order.
 
 ## 2. Edit `cld.conf`
 
@@ -31,17 +34,9 @@ and set to its default value -- editing means changing a value, not
 hunting for which line to uncomment. It is the whole configuration
 surface, and the only place a project-specific decision belongs.
 
-**Set `CLD_EXTRA_SPECIES` first.** If your repo mints `.cld` files that
-are neither a directory index (`INDEX`) nor a symbol index (`FILE`) --
-session summaries, captures, a mode registry -- declare those line-1
-tokens before the first run. This is the most common adoption mistake:
-a repo with a few hundred such files gets a `SYM-HDR` finding for every
-one of them until this line is right, and that wall of noise buries the
-handful of findings that are real.
-
-Then set `CLD_SKIP_RE` to name your vendored, generated, and binary
-trees, and `CLD_INDEXABLE_EXTS` to the extensions your directory
-indexes are expected to list.
+Set `CLD_SKIP_RE` to name your vendored, generated, and binary trees,
+and `CLD_INDEXABLE_EXTS` to the extensions your directory indexes are
+expected to list.
 
 `CLD_SKIP_RE` is the **single** place a "do not index this" decision is
 recorded. That is what lets `NOENTRY` block without being a judgment
@@ -53,11 +48,6 @@ for each, so a repo with no `cld.conf` at all still works. The two
 files are kept in sync by the test suite: adding a setting to one
 without the other fails the run.
 
-One setting to reach for reluctantly: `CLD_NOT_SYMBOL_INDEX_RE`
-exempts a `.cld` from symbol-audit entirely, not just from the finding
-that prompted it. A file exempted to silence `SYM-NAME` also stops
-being checked for duplicate keys and dead targets. Renaming the file is
-usually the better trade.
 
 ## 3. Add the rules to `CLAUDE.md`
 
@@ -90,11 +80,11 @@ work through it:
 
 ```sh
 scripts/index-audit/check.sh      # sweep the whole tree
-scripts/symbol-audit/check.sh     # same, for symbol indexes
+scripts/index-audit/check.sh lib/ # or scope it to a directory
 ```
 
-Run either with no arguments for the full picture, or with a directory
-to scope the sweep. Then write indexes directory by directory; each
+Run it with no arguments for the full picture, or with a directory to
+scope the sweep. Then write indexes directory by directory; each
 commit's gate keeps the ground you have already taken.
 
 ## Verifying

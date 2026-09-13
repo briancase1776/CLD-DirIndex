@@ -5,7 +5,8 @@
   index before hunting, and update one in the same commit.
 
   Adjust the paths if you vendored the toolkit somewhere other than the
-  repo root.
+  repo root. If you also adopted CLD-FileIndex, add its rule block too --
+  it ships its own.
 -->
 
 ## Directory Indexes
@@ -21,21 +22,9 @@ Format and rules: `spec/dir-index-format.txt`.
 - Keep `index.cld` current: update it in the same commit when you add,
   remove, rename, or edit a file in that directory.
 
-## Symbol Indexes
-
-Each source file has a `<filename>.cld` symbol index in the same
-directory. Format and rules: `spec/file-index-format.txt`.
-
-- When looking for a method, class, or API, check `<filename>.cld`
-  before grepping source -- or run the `filename-find` skill.
-- Before naming a new symbol, run `filename-dupecheck` on the name.
-- Keep `<filename>.cld` current: update it in the same commit when you
-  add, remove, rename, or change the signature or behaviour of any
-  symbol.
-
 ## The Gate
 
-`scripts/git-hooks/pre-commit` runs both index checkers over the staged
+`scripts/git-hooks/pre-commit` runs the index checker over the staged
 diff and blocks a commit whose indexes have gone stale. Install it once
 per clone with `./scripts/git-hooks/install.sh`. Run
 `index-audit-partial` before committing to see a block coming.

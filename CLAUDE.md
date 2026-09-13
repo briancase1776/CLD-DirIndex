@@ -1,21 +1,27 @@
 # CLD-DirIndex
 
-This repo is one thing: the `.cld` index toolkit -- the two index
-formats, the two mechanical checkers, the pre-commit gate, and the four
-lookup skills. It was extracted from a larger project where the tooling
-worked but shared context with an application domain that coloured every
-decision about it. Narrow scope is the point. Resist adding anything
-that is not about indexing a repository.
+This repo is one thing: the `.cld` **directory index** -- what is inside
+a directory -- and the tooling that keeps those indexes honest. Its
+sibling [CLD-FileIndex](https://github.com/briancase1776/CLD-FileIndex)
+covers what is inside a *file*. Resist merging them back, and resist
+adding anything that is not about indexing a directory.
 
-## The two species
+## What it indexes
 
-- `index.cld` -- a DIRECTORY index. Line 1 `INDEX <path/>`, then one
-  `F`/`D` entry per file or subdir. Spec: `spec/dir-index-format.txt`.
-- `<filename>.cld` -- a per-file SYMBOL index. Line 1 `FILE <path>`,
-  then one entry per symbol. Spec: `spec/file-index-format.txt`.
+`index.cld`, one per directory. Line 1 `INDEX <path/>`, then one entry
+per thing in that directory:
 
-They share an extension and nothing else. Line 1 is the discriminator,
-and every consumer selects on it.
+```
+INDEX lib/
+F cache.js           In-memory result cache over SQLite; mutex-guarded writes
+D utils/             Low-level shared helpers
+```
+
+`F` is a file, `D` is a subdirectory. Spec: `spec/dir-index-format.txt`.
+
+This side is language-agnostic by construction -- a directory is a
+directory whatever is in it -- which is why it is finished and the file
+side is not.
 
 ## Working here
 
@@ -24,16 +30,17 @@ and every consumer selects on it.
   Install it with `./scripts/git-hooks/install.sh`.
 - Keep `index.cld` current in the same commit. The gate will catch you,
   but the rule is what makes you not need catching.
-- Run `tests/run-tests.sh` before committing a change to either checker.
+- Run `tests/run-tests.sh` before committing a change to the checker.
   The suite builds throwaway git fixtures and asserts each finding code
   fires, and that a clean tree stays clean.
+- `scripts/git-hooks/pre-commit` MUST stay byte-identical to the copy in
+  CLD-FileIndex. See the contract section of the README.
 - Portability is a feature, not a nicety: no bashisms, no GNU-only
-  flags. Both checkers are POSIX `/bin/sh`. Anything project-specific
-  belongs in `cld.conf`, never in a checker.
+  flags. The checker is POSIX `/bin/sh`. Anything project-specific
+  belongs in `cld.conf`, never in the checker.
 
 ## Same-commit rule
 
 Adding, removing, or renaming a file means updating that directory's
-`index.cld` in the same commit. Changing a symbol means updating that
-file's `<filename>.cld` in the same commit. This is the whole discipline
-the toolkit exists to support.
+`index.cld` in the same commit. This is the whole discipline the
+toolkit exists to support.
