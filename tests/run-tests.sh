@@ -134,6 +134,63 @@ expect_miss "cld.conf skip list suppresses NOENTRY" "NOENTRY" "$out"
 expect_rc   "skipped tree passes (exit 0)" 0 "$rc"
 rm -rf "$d"
 
+# --- a dangling symlink is NOT an orphan (the -e bug) ---
+# -e follows the link, so before the -L arm was added a broken symlink
+# read as absent and its entry was reported ORPHAN -- even though the
+# link is present in the directory and the entry is telling the truth.
+d=$(fixture)
+mkdir -p "$d/lib"
+ln -s nowhere.txt "$d/lib/dangling.link"
+printf 'INDEX lib/\nL dangling.link   Points at a target that is not there yet\n' > "$d/lib/index.cld"
+git -C "$d" add -A >/dev/null 2>&1
+out=$(cd "$d" && sh scripts/index-audit/check.sh lib/index.cld 2>&1); rc=$?
+expect_miss "a dangling symlink is not an ORPHAN" "ORPHAN" "$out"
+expect_rc   "dangling symlink does not block (exit 0)" 0 "$rc"
+rm -rf "$d"
+
+# --- L resolves, and F/D/L are told apart by the entry not the target ---
+d=$(fixture)
+mkdir -p "$d/lib/sub"
+echo '// real' > "$d/lib/real.js"
+ln -s real.js "$d/lib/alias.js"
+printf 'INDEX lib/\nF real.js      A regular file\nL alias.js     A symlink to real.js\nD sub/         A subdirectory\n' > "$d/lib/index.cld"
+git -C "$d" add -A >/dev/null 2>&1
+out=$(cd "$d" && sh scripts/index-audit/check.sh lib/index.cld 2>&1); rc=$?
+expect_hit "F, L and D together are clean" "index-audit: clean" "$out"
+expect_rc  "mixed type letters exit 0" 0 "$rc"
+rm -rf "$d"
+
+# --- WRONGTYPE: the letter disagrees with the thing ---
+d=$(fixture)
+mkdir -p "$d/lib/sub"
+echo '// real' > "$d/lib/real.js"
+ln -s real.js "$d/lib/alias.js"
+printf 'INDEX lib/\nF sub/         Actually a directory\nF alias.js     Actually a symlink\nF real.js     Correct\n' > "$d/lib/index.cld"
+git -C "$d" add -A >/dev/null 2>&1
+out=$(cd "$d" && sh scripts/index-audit/check.sh lib/index.cld 2>&1); rc=$?
+expect_hit  "WRONGTYPE fires on an F naming a directory" "WRONGTYPE" "$out"
+expect_hit  "WRONGTYPE names the offending entry" "alias.js" "$out"
+expect_rc   "WRONGTYPE warns, does not block (exit 0)" 0 "$rc"
+expect_miss "WRONGTYPE does not fire on the correct entry" "'real.js' is marked" "$out"
+rm -rf "$d"
+
+# --- the exotic letters parse and check ---
+d=$(fixture)
+mkdir -p "$d/dev"
+mkfifo "$d/dev/pipe" 2>/dev/null
+if [ -p "$d/dev/pipe" ]; then
+  printf 'INDEX dev/\nP pipe        A named pipe\n' > "$d/dev/index.cld"
+  out=$(cd "$d" && sh scripts/index-audit/check.sh dev/index.cld 2>&1); rc=$?
+  expect_hit "a P entry for a real fifo is clean" "index-audit: clean" "$out"
+  expect_rc  "fifo entry exits 0" 0 "$rc"
+  printf 'INDEX dev/\nF pipe        Wrongly called a regular file\n' > "$d/dev/index.cld"
+  out=$(cd "$d" && sh scripts/index-audit/check.sh dev/index.cld 2>&1)
+  expect_hit "WRONGTYPE fires on an F naming a fifo" "WRONGTYPE" "$out"
+else
+  echo "  SKIP  fifo cases (mkfifo unavailable)"
+fi
+rm -rf "$d"
+
 # --- a clean tree reports clean ---
 d=$(fixture)
 mkdir -p "$d/lib"

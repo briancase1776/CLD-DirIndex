@@ -16,9 +16,12 @@
 # never set the exit code.
 #
 # Findings (mechanical, no LLM):
-#   ORPHAN  [BLOCK] an index.cld entry names a file/dir that does not exist
-#   NOENTRY [BLOCK] an indexable file has no entry in its dir's index.cld
-#   BADHDR  [warn]  an index.cld line 1 is not "INDEX <path/>"
+#   ORPHAN    [BLOCK] an index.cld entry names something that is not there
+#   NOENTRY   [BLOCK] an indexable file has no entry in its dir's index.cld
+#   BADHDR    [warn]  an index.cld line 1 is not "INDEX <path/>"
+#   WRONGTYPE [warn]  the entry's type letter disagrees with what the
+#                     thing actually is (an F naming a directory, an F
+#                     naming a symlink, and so on)
 #
 # A dir with NO index.cld is silently allowed here: leaf dirs are often
 # indexed by their PARENT, and warning on every such file would train the
@@ -83,6 +86,36 @@ skipped() {
   printf '%s' "$1" | grep -q "$CLD_SKIP_RE"
 }
 
+# Every type letter the format defines -- find(1)'s -type codes,
+# uppercased. Used both to recognise an entry line and to check it.
+TYPE_LETTERS='FDLPSBC'
+
+# entry_exists <path> -- is there a directory entry here at all?
+# -e alone is WRONG: it follows the link, so a dangling symlink reads as
+# absent and the entry describing it is reported ORPHAN. The link IS
+# present in the directory and the entry is telling the truth; where it
+# points is the target's problem. Hence the -L arm.
+entry_exists() {
+  [ -e "$1" ] || [ -L "$1" ]
+}
+
+# type_matches <letter> <path> -- does the thing match the letter?
+# The letter describes the ENTRY, not its target, so F and D must
+# exclude symlinks: -f and -d both follow a link, and without the -L
+# guard a symlink to a file would satisfy F.
+type_matches() {
+  case "$1" in
+    F) [ -f "$2" ] && [ ! -L "$2" ] ;;
+    D) [ -d "$2" ] && [ ! -L "$2" ] ;;
+    L) [ -L "$2" ] ;;
+    P) [ -p "$2" ] ;;
+    S) [ -S "$2" ] ;;
+    B) [ -b "$2" ] ;;
+    C) [ -c "$2" ] ;;
+    *) return 0 ;;
+  esac
+}
+
 is_indexable() {
   e=$(ext_of "$1")
   [ "$e" = "cld" ] && return 1
@@ -125,23 +158,37 @@ audit_index_file() {
   while IFS= read -r line; do
     ln=$((ln + 1))
     [ "$ln" -eq 1 ] && continue
-    case "$line" in
-      "F "*|"D "*) : ;;
+    letter=${line%% *}
+    case "$letter" in
+      [FDLPSBC]) : ;;
       *) continue ;;
     esac
-    rest=${line#[FD] }
+    case "$line" in
+      "$letter "*) : ;;
+      *) continue ;;
+    esac
+    rest=${line#? }
     chunk=${rest%%"  "*}
     cand=$chunk
     ok=0
     while [ -n "$cand" ]; do
-      if [ -e "$d/${cand%/}" ]; then ok=1; break; fi
+      if entry_exists "$d/${cand%/}"; then ok=1; break; fi
       case "$cand" in
         *" "*) cand=${cand% *} ;;
         *)     cand="" ;;
       esac
     done
-    [ "$ok" -eq 1 ] || \
+    if [ "$ok" -eq 1 ]; then
+      # The entry resolves. Does its letter tell the truth about it?
+      # A warning, not a block: the letter is a convention call (a
+      # symlink is L, never the type of its target), and a repo adopting
+      # the fuller alphabet should be told rather than stopped.
+      type_matches "$letter" "$d/${cand%/}" || \
+        note WRONGTYPE "$idx" "$ln" \
+             "entry '$cand' is marked $letter but is not"
+    else
       block ORPHAN "$idx" "$ln" "entry '$chunk' names a missing target"
+    fi
   done < "$idx"
 }
 
@@ -149,7 +196,9 @@ audit_index_file() {
 # entry in its directory's index.cld.
 audit_member() {
   f="$1"
-  [ -f "$f" ] || return 0
+  # -f follows a link, so a dangling symlink would be skipped entirely
+  # and never raise NOENTRY. It is still an entry in the directory.
+  { [ -f "$f" ] || [ -L "$f" ]; } || return 0
   is_indexable "$f" || return 0
   base=$(base_of "$f")
   d=$(dir_of "$f")
@@ -163,8 +212,8 @@ audit_member() {
   # right after "T " and ends at a space, a directory slash, or the line
   # end; base may itself contain single spaces, so compare by prefix plus
   # the boundary character (avoids the alignment-column ambiguity).
-  if ! awk -v n="$base" '
-        $1 == "F" || $1 == "D" {
+  if ! awk -v n="$base" -v types="$TYPE_LETTERS" '
+        length($1) == 1 && index(types, $1) > 0 {
           rest = substr($0, 3)
           if (index(rest, n) == 1) {
             after = substr(rest, length(n) + 1, 1)

@@ -14,10 +14,13 @@ per thing in that directory:
 ```
 INDEX lib/
 F cache.js           In-memory result cache over SQLite; mutex-guarded writes
+L current.json       Symlink to the active config in versions/
 D utils/             Low-level shared helpers
 ```
 
-`F` is a file, `D` is a subdirectory. Spec: `spec/dir-index-format.txt`.
+Type letters are find(1)'s `-type` codes uppercased -- `F D L P S B C`
+-- and describe the entry, not what it points at. Spec:
+`spec/dir-index-format.txt`.
 
 This side is language-agnostic by construction -- a directory is a
 directory whatever is in it -- which is why it is finished and the file

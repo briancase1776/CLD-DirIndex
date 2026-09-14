@@ -12,7 +12,29 @@ FORMAT
   Line 1 : INDEX <path/>
   Lines 2+: <T> <name>    <description>
 
-  T = F (file) or D (subdirectory, trailing slash on name)
+TYPE LETTERS
+  The letters follow find(1)'s -type codes, uppercased, so there is
+  nothing new to learn:
+
+    F  regular file
+    D  directory                 (trailing slash on the name)
+    L  symbolic link
+    P  FIFO (named pipe)
+    S  socket
+    B  block device
+    C  character device
+
+  THE LETTER DESCRIBES THE DIRECTORY ENTRY, NOT WHAT IT POINTS AT. A
+  symlink is L even when it resolves to a regular file -- the thing in
+  this directory is the link. This matches find -type l and ls -l, and
+  it is the only rule that stays true when the target moves or dies.
+
+  In practice a git-tracked repo sees F, D and L and nothing else: git
+  cannot store a fifo, socket, or device node at all (git add accepts
+  them silently and tracks nothing). The remaining letters exist so the
+  format can describe a real directory truthfully -- an image being
+  staged, a /dev listing, a distro tree -- not because a repo will
+  produce them.
 
 RULES
   - One entry per file/subdir; skip generated files and build artifacts.
@@ -42,8 +64,13 @@ ENFORCEMENT
   scripts/index-audit/check.sh reads this format mechanically. It blocks
   a commit on ORPHAN (an entry names a missing target) and on NOENTRY
   (an indexable file has no entry), and warns on BADHDR (line 1 is not
-  "INDEX <path/>"). The skip list in cld.conf is the SINGLE place a
-  "do not index this" decision is recorded.
+  "INDEX <path/>") and WRONGTYPE (the entry's letter disagrees with what
+  the thing actually is). The skip list in cld.conf is the SINGLE place
+  a "do not index this" decision is recorded.
+
+  A dangling symlink is NOT an orphan. The link is present in the
+  directory and the entry describing it is telling the truth; where it
+  points is the target's problem, not the index's.
 
 EXAMPLE
   INDEX lib/
@@ -51,3 +78,4 @@ EXAMPLE
   F errors.js          Error and perf logging; see notes/errors.md
   F interceptor.js     Intercepts outbound XHR; 9 endpoint handlers
   D utils/             Low-level shared helpers
+  L current.json       Symlink to the active config in versions/

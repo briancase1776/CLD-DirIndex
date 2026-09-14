@@ -19,10 +19,18 @@ one per directory:
 INDEX lib/
 F cache.js           In-memory result cache over SQLite; mutex-guarded writes
 F errors.js          Error and perf logging; see notes/errors.md
+L current.json       Symlink to the active config in versions/
 D utils/             Low-level shared helpers
 ```
 
-`F` is a file, `D` is a subdirectory.
+The type letters are find(1)'s `-type` codes, uppercased: `F` file,
+`D` directory, `L` symlink, `P` fifo, `S` socket, `B` block device,
+`C` character device. The letter describes the **entry**, not what it
+points at -- a symlink is `L` even when it resolves to a regular file.
+
+In a git repo you will see `F`, `D` and `L` and nothing else: git
+cannot store a fifo, socket, or device node at all. The rest exist so
+the format can describe a real directory truthfully.
 
 The point: an agent arriving cold can find the right file by what it
 *does* -- without walking the tree. The index is the map. It only works
@@ -40,7 +48,7 @@ Full rules: [`spec/dir-index-format.txt`](spec/dir-index-format.txt).
 | `.claude/skills/` | `index-find`, `index-audit-partial` |
 | `rules/` | The CLAUDE.md block and settings fragment to paste into a host repo |
 | `cld.conf` | The shipped default config -- every project-specific value, in one place outside the checkers |
-| `tests/run-tests.sh` | 27 assertions over throwaway git fixtures |
+| `tests/run-tests.sh` | 38 assertions over throwaway git fixtures |
 
 ## The three layers
 
@@ -55,9 +63,14 @@ hurry.
 
 ## Findings
 
-- `ORPHAN` **blocks** -- an entry names a file or dir that does not exist
+- `ORPHAN` **blocks** -- an entry names something that is not there
 - `NOENTRY` **blocks** -- an indexable file has no entry in its dir index
 - `BADHDR` *warns* -- line 1 is not `INDEX <path/>`
+- `WRONGTYPE` *warns* -- the entry's letter disagrees with what the thing is
+
+A dangling symlink is **not** an orphan. The link is present in the
+directory and the entry describing it is telling the truth; where it
+points is the target's problem.
 
 Blocking findings are the ones that cannot false-positive or are scoped
 so tightly they may as well not. Everything judgment-shaped warns.
@@ -90,7 +103,7 @@ one.
 git clone https://github.com/briancase1776/CLD-DirIndex
 cd CLD-DirIndex
 ./scripts/git-hooks/install.sh   # gate this repo
-tests/run-tests.sh               # 27 passed, 0 failed
+tests/run-tests.sh               # 38 passed, 0 failed
 ```
 
 To adopt it in another repository, see [INSTALL.md](INSTALL.md).
