@@ -99,6 +99,26 @@ entry_exists() {
   [ -e "$1" ] || [ -L "$1" ]
 }
 
+# describe_type <path> -- the letter the thing actually deserves.
+# Ordered L first: -f and -d both follow a link, so a symlink would
+# otherwise answer F. Same classification stat(1) gives from S_IFMT --
+# verified identical across all seven types, broken links included --
+# but test is a shell builtin and POSIX, where stat is neither. (stat
+# is not in POSIX at all, and its -f flag means a format string on BSD
+# and "filesystem status" on GNU, so a stat-based check does not fail
+# loudly on the wrong box, it silently asks a different question.)
+describe_type() {
+  if   [ -L "$1" ]; then printf 'L (symlink)'
+  elif [ -f "$1" ]; then printf 'F (regular file)'
+  elif [ -d "$1" ]; then printf 'D (directory)'
+  elif [ -p "$1" ]; then printf 'P (fifo)'
+  elif [ -S "$1" ]; then printf 'S (socket)'
+  elif [ -b "$1" ]; then printf 'B (block device)'
+  elif [ -c "$1" ]; then printf 'C (character device)'
+  else printf 'an unknown type'
+  fi
+}
+
 # type_matches <letter> <path> -- does the thing match the letter?
 # The letter describes the ENTRY, not its target, so F and D must
 # exclude symlinks: -f and -d both follow a link, and without the -L
@@ -185,7 +205,7 @@ audit_index_file() {
       # the fuller alphabet should be told rather than stopped.
       type_matches "$letter" "$d/${cand%/}" || \
         note WRONGTYPE "$idx" "$ln" \
-             "entry '$cand' is marked $letter but is not"
+             "entry '$cand' is marked $letter but is $(describe_type "$d/${cand%/}")"
     else
       block ORPHAN "$idx" "$ln" "entry '$chunk' names a missing target"
     fi

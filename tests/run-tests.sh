@@ -172,6 +172,8 @@ expect_hit  "WRONGTYPE fires on an F naming a directory" "WRONGTYPE" "$out"
 expect_hit  "WRONGTYPE names the offending entry" "alias.js" "$out"
 expect_rc   "WRONGTYPE warns, does not block (exit 0)" 0 "$rc"
 expect_miss "WRONGTYPE does not fire on the correct entry" "'real.js' is marked" "$out"
+expect_hit  "WRONGTYPE names the type it actually is" "but is D (directory)" "$out"
+expect_hit  "WRONGTYPE calls a symlink a symlink" "but is L (symlink)" "$out"
 rm -rf "$d"
 
 # --- the exotic letters parse and check ---
