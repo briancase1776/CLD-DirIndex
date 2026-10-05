@@ -3,8 +3,8 @@
 This repo is one thing: the `.cld` **directory index** -- what is inside
 a directory -- and the tooling that keeps those indexes honest. Its
 sibling [CLD-FileIndex](https://github.com/briancase1776/CLD-FileIndex)
-covers what is inside a *file*. Resist merging them back, and resist
-adding anything that is not about indexing a directory.
+covers what is inside a *file*. Resist adding anything that is not
+about indexing a directory.
 
 ## What it indexes
 
