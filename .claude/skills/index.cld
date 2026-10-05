@@ -1,5 +1,12 @@
 INDEX .claude/skills/
-D index-find/            Find a file or dir through the directory indexes
-D index-audit-partial/   Run the directory-index gate over the staged diff on demand
-D filename-find/         Find which file defines a symbol through the symbol indexes
-D filename-dupecheck/    Check whether a symbol name is already taken before naming
+D index-find/              Find a file or dir through the directory indexes
+D index-audit-partial/     Run the directory-index gate over the staged diff on demand
+D symbol-find-js/          Find which JavaScript file defines a symbol
+D symbol-find-py/          Find which Python file defines a symbol
+D symbol-find-bash/        Find which bash file defines a symbol
+D symbol-find-sh/          Find which POSIX sh file defines a symbol
+D symbol-dupecheck-js/     Check whether a JavaScript symbol name is already taken
+D symbol-dupecheck-py/     Check whether a Python symbol name is already taken
+D symbol-dupecheck-bash/   Check whether a bash symbol name is already taken
+D symbol-dupecheck-sh/     Check whether a POSIX sh symbol name is already taken
+D symbol-deps/             What a file depends on, and which files depend on it

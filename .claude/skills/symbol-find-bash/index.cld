@@ -1,0 +1,2 @@
+INDEX .claude/skills/symbol-find-bash/
+F SKILL.md   Find the file that defines a bash symbol: lookup.sh find NAME --lang bash

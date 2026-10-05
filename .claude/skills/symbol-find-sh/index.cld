@@ -1,0 +1,2 @@
+INDEX .claude/skills/symbol-find-sh/
+F SKILL.md   Find the file that defines a POSIX sh symbol: lookup.sh find NAME --lang sh

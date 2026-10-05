@@ -1,0 +1,2 @@
+INDEX .claude/skills/symbol-find-py/
+F SKILL.md   Find the file that defines a Python symbol: lookup.sh find NAME --lang py

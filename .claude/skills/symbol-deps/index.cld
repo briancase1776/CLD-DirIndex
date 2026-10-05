@@ -1,0 +1,2 @@
+INDEX .claude/skills/symbol-deps/
+F SKILL.md   What a file depends on and what depends on it: lookup.sh deps FILE, rdeps TARGET
