@@ -1,2 +1,2 @@
 INDEX scripts/index-audit/
-F check.sh    Directory-index freshness checker (ORPHAN and NOENTRY block, BADHDR warns)
+F check.sh    Directory-index checker: ORPHAN and NOENTRY block, the rest warn, --gone takes deletions
