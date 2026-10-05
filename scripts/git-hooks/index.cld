@@ -1,4 +1,4 @@
 INDEX scripts/git-hooks/
-F install.sh      Install the hooks into .git/hooks/, backing up a foreign pre-commit
-F pre-commit      Dispatcher: runs every executable in pre-commit.d/ in lexical order
+F install.sh      Install the dispatcher where git runs hooks, chaining a foreign pre-commit
+F pre-commit      Dispatcher: the chained hook, then every pre-commit.d check over the staged tree
 D pre-commit.d/   Drop-in pre-commit checks, ordered by NN- prefix

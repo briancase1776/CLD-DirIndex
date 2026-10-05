@@ -1,16 +1,39 @@
 #!/bin/sh
-# @brief Index-audit gate: run scripts/index-audit/check.sh on the staged
-# files passed as positional args by the pre-commit dispatcher.
+# scripts/git-hooks/pre-commit.d/20-index-audit
+# @brief Index-audit gate: run scripts/index-audit/check.sh over the
+# paths the pre-commit dispatcher routes to it.
 #
-# Blocks the commit when a staged index.cld is out of sync with its
-# directory -- ORPHAN (entry names a missing target) or NOENTRY (an
-# indexable file has no entry). BADHDR prints as a warning and does not
-# block.
+# Called by scripts/git-hooks/pre-commit from the root of a temp tree
+# holding the STAGED content (GIT_DIR/GIT_WORK_TREE point git at it), as
+#     20-index-audit [PATH...] [--gone PATH...]
+# -- the staged paths that exist in the commit, then the ones it deletes
+# or renames away. Both lists go to the checker unchanged.
+#
+# Blocks the commit when a directory index is out of sync with its
+# directory -- ORPHAN (an entry names something that is not there, or
+# names a path this commit deletes or renames away) or NOENTRY (an
+# indexable file has no entry). Warnings print and do not block.
+#
+# A missing or non-executable checker BLOCKS: a gate that cannot run must
+# never read as a gate that passed.
 
-repo=$(git rev-parse --show-toplevel)
-checker="$repo/scripts/index-audit/check.sh"
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "index-audit gate: BLOCKED -- not inside a git work tree" >&2
+  exit 2
+}
+rel=scripts/index-audit/check.sh
+checker=$root/$rel
 
-[ -x "$checker" ] || exit 0
+if [ ! -f "$checker" ]; then
+  echo "index-audit gate: BLOCKED -- the checker $rel is missing from the tree being committed" >&2
+  exit 2
+fi
+if [ ! -x "$checker" ]; then
+  echo "index-audit gate: BLOCKED -- the checker $rel is not executable" \
+       "(chmod +x $rel, then git add it)" >&2
+  exit 2
+fi
+
 [ "$#" -eq 0 ] && exit 0
 
-"$checker" "$@"
+exec "$checker" "$@"

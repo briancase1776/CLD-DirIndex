@@ -1,18 +1,42 @@
 #!/bin/sh
-# @brief Symbol-audit gate: run scripts/symbol-audit/check.sh on the
-# staged files passed as positional args by the pre-commit dispatcher.
+# scripts/git-hooks/pre-commit.d/30-symbol-audit
+# @brief Symbol-audit gate: run scripts/symbol-audit/check.sh over the
+# paths the pre-commit dispatcher routes to it.
+#
+# Called by scripts/git-hooks/pre-commit from the root of a temp tree
+# holding the STAGED content (GIT_DIR/GIT_WORK_TREE point git at it), as
+#     30-symbol-audit [PATH...] [--gone PATH...]
+# -- the staged paths that exist in the commit, then the ones it deletes
+# or renames away. Both lists go to the checker unchanged.
 #
 # Blocks the commit when a staged symbol index (<file>.cld, line 1
 # "FILE <path>") has an unknown header (SYM-HDR), names a target that
-# does not exist (SYM-DEAD), is not named after its target (SYM-NAME),
-# shares its target with another index (SYM-DUP), or carries an
-# unusable lookup key (SYM-KEY). Unwatched staged files are ignored by
-# the checker.
+# does not exist (SYM-DEAD -- including a target this commit deletes or
+# renames away while its <file>.cld stays), is not named after its
+# target (SYM-NAME), shares its target with another index (SYM-DUP), or
+# carries an unusable lookup key (SYM-KEY). Paths that are neither a .cld
+# nor a watched source are ignored by the checker.
+#
+# A missing or non-executable checker BLOCKS: a gate that cannot run must
+# never read as a gate that passed.
 
-repo=$(git rev-parse --show-toplevel)
-checker="$repo/scripts/symbol-audit/check.sh"
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "symbol-audit gate: BLOCKED -- not inside a git work tree" >&2
+  exit 2
+}
+rel=scripts/symbol-audit/check.sh
+checker=$root/$rel
 
-[ -x "$checker" ] || exit 0
+if [ ! -f "$checker" ]; then
+  echo "symbol-audit gate: BLOCKED -- the checker $rel is missing from the tree being committed" >&2
+  exit 2
+fi
+if [ ! -x "$checker" ]; then
+  echo "symbol-audit gate: BLOCKED -- the checker $rel is not executable" \
+       "(chmod +x $rel, then git add it)" >&2
+  exit 2
+fi
+
 [ "$#" -eq 0 ] && exit 0
 
-"$checker" "$@"
+exec "$checker" "$@"
