@@ -542,6 +542,30 @@ expect_miss "a lookup whose listing fails finds nothing" "C Thing" "$out"
 expect_rc   "a lookup whose listing fails exits 2" 2 "$rc"
 rm -rf "$d" "$fg"
 
+# A pattern in cld.conf that grep rejects is a setup error, not "no
+# match": it must not quietly switch a check (or an exemption) off.
+d=$(fixture)
+mkdir -p "$d/lib"
+echo 'class Orphaned {}' > "$d/lib/orphaned.js"
+printf 'FILE lib/gone.js\nC Gone   Not there\n' > "$d/lib/gone.js.cld"
+stage "$d"
+out=$(cd "$d" && $SH $SA lib/orphaned.js lib/gone.js.cld 2>&1); rc=$?
+expect_hit  "control: SYM-MISS and SYM-DEAD with a sane cld.conf" "SYM-MISS (warn) lib/orphaned.js" "$out"
+expect_hit  "control: and SYM-DEAD" "SYM-DEAD lib/gone.js.cld" "$out"
+printf 'CLD_DECL_RE=%s\n' "'('" > "$d/cld.conf"
+stage "$d"
+out=$(cd "$d" && $SH $SA lib/orphaned.js 2>&1); rc=$?
+expect_miss "a CLD_DECL_RE grep rejects is not clean" "symbol-audit: clean" "$out"
+expect_rc   "a CLD_DECL_RE grep rejects exits 2" 2 "$rc"
+printf 'CLD_NOT_SYMBOL_INDEX_RE=%s\n' "'\\('" > "$d/cld.conf"
+stage "$d"
+out=$(cd "$d" && $SH $SA lib/gone.js.cld 2>&1); rc=$?
+expect_miss "a CLD_NOT_SYMBOL_INDEX_RE grep rejects is not clean" "symbol-audit: clean" "$out"
+expect_rc   "a CLD_NOT_SYMBOL_INDEX_RE grep rejects exits 2" 2 "$rc"
+out=$(cd "$d" && $SH $LK find Gone 2>&1); rc=$?
+expect_rc   "the lookup on that cld.conf exits 2 too" 2 "$rc"
+rm -rf "$d"
+
 section "symbol-lookup: find and dupecheck"
 
 d=$(fixture)
