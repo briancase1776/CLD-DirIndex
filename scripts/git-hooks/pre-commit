@@ -1,50 +1,342 @@
 #!/bin/sh
-# @brief Pre-commit dispatcher: run every executable in
-# scripts/git-hooks/pre-commit.d/ in lexical order.
+# scripts/git-hooks/pre-commit
+# @brief Pre-commit dispatcher: run a chained foreign hook, then every
+# check in scripts/git-hooks/pre-commit.d/ over the STAGED tree.
+# (marker: cld-dispatcher -- install.sh recognises its own hook by it)
 #
-# Each check receives the list of staged file paths (ACM filter) as
-# positional args. Any check returning non-zero blocks the commit; all
-# checks run regardless so the user sees every failure in one pass.
+# Usage:
+#   installed as the pre-commit hook by install.sh   git runs it
+#   scripts/git-hooks/pre-commit --audit             the same checks over
+#       the same staged diff, on demand: prints how the diff was routed,
+#       never runs a chained hook, exits 0 (would pass), 1 (would block)
+#       or 2 (could not check)
 #
-# To add a check: drop an executable file into pre-commit.d/ named
-# NN-name where NN controls ordering. Number with tens-spacing so
-# new checks can be inserted between existing ones.
+# What it does, in order:
+#   1. Runs the chained hook, if install.sh found a foreign pre-commit
+#      and moved it to pre-commit.cld-chained beside this file. It runs
+#      FIRST because a hook such as a formatter may re-stage files, and
+#      the .cld checks must judge what will actually be committed. Its
+#      failure blocks, but the .cld checks still run, so every failure
+#      shows in one pass. A chained hook that is not an executable file
+#      is not run (git would not have run it either), and is named.
+#   2. Reads the staged diff with renames OFF, so a rename arrives as a
+#      deletion plus an addition, and with -z and core.quotePath=false,
+#      so no name arrives C-quoted. Deleted paths are GONE; every other
+#      status (added, modified, type changed) is PRESENT.
+#   3. Materialises the index -- exactly what is being committed -- in a
+#      temp tree with git checkout-index, and runs every check there with
+#      GIT_DIR=<this repo's git dir> GIT_WORK_TREE=<temp tree>. So an
+#      unstaged edit, an unstaged deletion or an untracked file cannot
+#      change the answer, and neither can a partial commit (git commit
+#      <paths>): git hands the hook that commit's own index in
+#      GIT_INDEX_FILE, which is made absolute here because git reads a
+#      relative one against the work tree, and the work tree moves.
+#      The checks and checkers that run are the ones IN the temp tree:
+#      the gate that judges a commit is the gate in that commit.
+#   4. Routes the paths. A PRESENT path is passed if it exists in the
+#      temp tree in any form ([ -e ] || [ -L ]: a dangling symlink and a
+#      symlink to a directory are still entries). GONE paths are passed
+#      after --gone, together with every ancestor directory that no
+#      longer exists (deleting lib/sub/ must reach the "D sub/" entry in
+#      lib/index.cld). A gone path that exists again in the staged tree
+#      (a file replaced by a directory) is not gone, and is dropped.
+#      Nothing else is added: a deletion never drags in a whole index,
+#      so an honest commit is not blocked for someone else's old orphan.
+#
+# The contract with each check in pre-commit.d/ (and, through it, with
+# each checker): it runs from the temp tree's root with GIT_DIR and
+# GIT_WORK_TREE exported, and is called as
+#     NN-check [PATH...] [--gone PATH...]
+# Every PATH is repo-root-relative and spelled the way git spells it,
+# except that a root-level name starting with '-' is passed as ./-name.
+# Everything after the first --gone is a gone path; gone directories
+# carry no trailing slash. A check that exits non-zero blocks: 1 means
+# "found something", anything else "could not check", which blocks too.
+# A very large commit is split into several calls, each standing alone,
+# so no argument list can overflow.
+#
+# What counts as a check: a file in pre-commit.d/ whose name starts with
+# a digit (NN-name; number in tens so a new check slots in between). It
+# must be executable. A check that has lost its x bit BLOCKS instead of
+# being skipped: a gate that silently stops running looks exactly like a
+# gate that passes. Anything else in that directory (its index.cld) is
+# not a check.
+#
+# Also BLOCKED, loudly: a staged path holding a newline (it cannot be
+# handed on safely), a temp tree that cannot be built, a pre-commit.d
+# with no checks in it, and a commit that removes pre-commit.d while
+# HEAD has it. A tree that never had pre-commit.d (an older branch, or
+# another repo sharing a core.hooksPath) runs no .cld checks, and says so.
 #
 # There is no sanctioned bypass. git's own --no-verify skips hooks
 # entirely and cannot be refused from here, but the rule is fix the
 # violations -- so this hook does not advertise it.
+#
+# POSIX sh only.
 
-repo=$(git rev-parse --show-toplevel)
-dispatch_dir="$repo/scripts/git-hooks/pre-commit.d"
+set -u
 
-[ -d "$dispatch_dir" ] || exit 0
+CHECKS_REL=scripts/git-hooks/pre-commit.d
 
-# Build staged file list once; pass to each check as args.
-staged=$(git diff --cached --name-only --diff-filter=ACM)
-set --
-IFS='
-'
-for f in $staged; do
-  [ -f "$f" ] && set -- "$@" "$f"
-done
-unset IFS
+die() {
+  printf 'pre-commit: BLOCKED -- %s\n' "$1" >&2
+  exit 2
+}
+
+usage() {
+  printf 'usage: %s [--audit]\n' "$0" >&2
+  exit 2
+}
+
+mode=hook
+if [ "$#" -gt 0 ]; then
+  case $1 in
+    --audit) mode=audit ;;
+    *) usage ;;
+  esac
+  shift
+  [ "$#" -eq 0 ] || usage
+fi
+
+here=$(CDPATH= cd "$(dirname "$0")" && pwd) ||
+  die "cannot find the directory this hook runs from"
+chain=$here/pre-commit.cld-chained
+
+# Find the repo before moving: a relative GIT_DIR means "from here".
+top=$(git rev-parse --show-toplevel 2>/dev/null) && [ -n "$top" ] ||
+  die "not inside a git work tree"
+gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) && [ -n "$gitdir" ] ||
+  die "cannot find the git directory"
+cd "$top" || die "cannot cd to $top"
+if [ -n "${GIT_DIR:-}" ]; then GIT_DIR=$gitdir; export GIT_DIR; fi
+if [ -n "${GIT_WORK_TREE:-}" ]; then GIT_WORK_TREE=$top; export GIT_WORK_TREE; fi
+case ${GIT_INDEX_FILE:-} in
+  ''|/*) : ;;
+  *) GIT_INDEX_FILE=$top/$GIT_INDEX_FILE; export GIT_INDEX_FILE ;;
+esac
 
 overall=0
-for check in "$dispatch_dir"/*; do
-  [ -x "$check" ] || continue
-  "$check" "$@"
-  rc=$?
-  if [ "$rc" -ne 0 ]; then
-    overall=$rc
+
+finish() {
+  if [ "$overall" -ne 0 ]; then
+    if [ "$mode" = audit ]; then
+      echo "pre-commit --audit: the hook would BLOCK this commit"
+    else
+      echo ""
+      echo "BLOCKED: one or more pre-commit checks failed."
+      echo "  fix the violations above -- you own every violation in a"
+      echo "  file you commit, not only the ones you introduced."
+      echo ""
+    fi
+    exit 1
+  fi
+  [ "$mode" = audit ] &&
+    echo "pre-commit --audit: the hook would let this commit through"
+  exit 0
+}
+
+# --- 1. the chained foreign hook -------------------------------------------
+if [ "$mode" = hook ]; then
+  if [ -f "$chain" ] && [ -x "$chain" ]; then
+    "$chain"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "pre-commit: the chained hook $chain failed (exit $rc)"
+      overall=1
+    fi
+  elif [ -e "$chain" ] || [ -L "$chain" ]; then
+    echo "pre-commit: note: $chain is not an executable file, so it is" \
+         "not run (git would not run it either)"
+  fi
+fi
+
+work=$(mktemp -d) || die "cannot make a temp directory"
+trap 'rm -rf "$work"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# --- 2. the staged diff ----------------------------------------------------
+git -c core.quotePath=false diff --cached --no-renames --no-color \
+    --name-status -z > "$work/diff" || die "cannot read the staged diff"
+# -z keeps every byte of a name, but the lists below are one path per
+# line, so a name holding a newline cannot be handed on. Refuse it.
+nl=$(tr -cd '\n' < "$work/diff" | wc -c | tr -d ' ')
+[ "$nl" -eq 0 ] ||
+  die "a staged path holds a newline character; the .cld checks cannot be handed it safely -- rename it"
+tr '\000' '\n' < "$work/diff" > "$work/diff.nl"
+: > "$work/present.raw"
+: > "$work/gone.raw"
+while IFS= read -r st && IFS= read -r p; do
+  case $st in
+    D) printf '%s\n' "$p" >> "$work/gone.raw" ;;
+    *) printf '%s\n' "$p" >> "$work/present.raw" ;;
+  esac
+done < "$work/diff.nl"
+
+if [ ! -s "$work/present.raw" ] && [ ! -s "$work/gone.raw" ]; then
+  [ "$mode" = audit ] && echo "pre-commit --audit: nothing staged"
+  finish
+fi
+
+# --- 3. the staged tree ----------------------------------------------------
+mkdir "$work/tree" && tree=$(CDPATH= cd "$work/tree" && pwd -P) ||
+  die "cannot make the temp tree"
+# A sparse checkout marks the files outside it skip-worktree, and
+# checkout-index skips those by default -- a tree with holes in it, where
+# every entry naming a hole reads as missing. Ask for them where git can.
+sw=
+if git checkout-index -h 2>&1 | grep -q 'ignore-skip-worktree-bits'; then
+  sw=--ignore-skip-worktree-bits
+fi
+# No LFS downloads for a gate (pointer files are enough to know a file is
+# there), and no CRLF conversion: the tree holds the bytes being committed.
+GIT_LFS_SKIP_SMUDGE=1 git -c core.autocrlf=false \
+    checkout-index -a $sw --prefix="$tree/" ||
+  die "cannot materialise the staged tree in $tree"
+
+checks_dir=$tree/$CHECKS_REL
+if [ ! -d "$checks_dir" ]; then
+  if git cat-file -e "HEAD:$CHECKS_REL" 2>/dev/null; then
+    die "this commit removes $CHECKS_REL, the gate's own checks; a commit cannot switch off its own gate (to retire the toolkit, uninstall the hook first)"
+  fi
+  echo "pre-commit: this tree has no $CHECKS_REL, so no .cld checks run"
+  finish
+fi
+
+checks=
+nchecks=0
+for c in "$checks_dir"/*; do
+  name=${c##*/}
+  case $name in
+    [0-9]*) : ;;
+    *) continue ;;
+  esac
+  nchecks=$((nchecks + 1))
+  if [ ! -f "$c" ]; then
+    echo "pre-commit: BLOCKED -- $CHECKS_REL/$name is not a file, so it cannot run"
+    overall=1
+  elif [ ! -x "$c" ]; then
+    echo "pre-commit: BLOCKED -- $CHECKS_REL/$name is not executable, so it cannot run;" \
+         "a check that cannot run blocks, it is never skipped" \
+         "(chmod +x it, then git add it)"
+    overall=1
+  else
+    checks="$checks$c
+"
   fi
 done
+[ "$nchecks" -gt 0 ] ||
+  die "$CHECKS_REL holds no checks (files named NN-name); a gate with nothing in it is not a gate"
 
-if [ "$overall" -ne 0 ]; then
-  echo ""
-  echo "BLOCKED: one or more pre-commit checks failed."
-  echo "  fix the violations above -- you own every violation in a"
-  echo "  file you commit, not only the ones you introduced."
+# --- 4. routing ------------------------------------------------------------
+exists() { [ -e "$tree/$1" ] || [ -L "$tree/$1" ]; }
+
+LC_ALL=C sort -u "$work/present.raw" > "$work/present.sorted"
+: > "$work/present"
+while IFS= read -r p; do
+  if exists "$p"; then
+    printf '%s\n' "$p" >> "$work/present"
+  else
+    echo "pre-commit: note: $p is staged but was not materialised, so it is not checked"
+  fi
+done < "$work/present.sorted"
+
+: > "$work/gone.all"
+while IFS= read -r p; do
+  exists "$p" && continue
+  printf '%s\n' "$p" >> "$work/gone.all"
+  d=$p
+  while :; do
+    case $d in
+      */*) d=${d%/*} ;;
+      *) break ;;
+    esac
+    exists "$d" && break
+    printf '%s\n' "$d" >> "$work/gone.all"
+  done
+done < "$work/gone.raw"
+LC_ALL=C sort -u "$work/gone.all" > "$work/gone"
+
+if [ "$mode" = audit ]; then
+  show() {
+    n=$(wc -l < "$2" | tr -d ' ')
+    echo "  $1 ($n)"
+    sed -n '1,200s/^/    /p' "$2"
+    [ "$n" -le 200 ] || echo "    ... and $((n - 200)) more"
+  }
+  echo "pre-commit --audit: the staged diff, routed as the hook routes it"
+  show "present -- checked as they will be committed" "$work/present"
+  show "gone -- deleted or renamed away, passed after --gone" "$work/gone"
   echo ""
 fi
 
-exit $overall
+# Batches: one argument list per call, kept well inside ARG_MAX (a name's
+# length is counted in characters, which can undercount bytes -- hence
+# the wide margin).
+argmax=$(getconf ARG_MAX 2>/dev/null) || argmax=
+case $argmax in
+  ''|*[!0-9]*) argmax=262144 ;;
+esac
+budget=$((argmax / 8))
+[ "$budget" -ge 2048 ] || budget=2048
+nb=0
+bytes=0
+cur=
+gone_open=0
+batches=
+new_batch() {
+  nb=$((nb + 1))
+  cur=$work/batch.$((100000 + nb))
+  : > "$cur"
+  batches="$batches$cur
+"
+  bytes=0
+  gone_open=0
+}
+add_arg() {  # add_arg present|gone <path>
+  a=$2
+  case $a in -*) a=./$a ;; esac
+  sz=$((${#a} + 16))
+  if [ -z "$cur" ] || { [ "$bytes" -gt 0 ] && [ $((bytes + sz)) -gt "$budget" ]; }; then
+    new_batch
+  fi
+  if [ "$1" = gone ] && [ "$gone_open" -eq 0 ]; then
+    printf '%s\n' --gone >> "$cur"
+    gone_open=1
+    bytes=$((bytes + 16))
+  fi
+  printf '%s\n' "$a" >> "$cur"
+  bytes=$((bytes + sz))
+}
+while IFS= read -r p; do add_arg present "$p"; done < "$work/present"
+while IFS= read -r p; do add_arg gone "$p"; done < "$work/gone"
+
+[ -n "$batches" ] || finish
+
+# --- 5. run the checks inside the staged tree ------------------------------
+GIT_DIR=$gitdir
+GIT_WORK_TREE=$tree
+export GIT_DIR GIT_WORK_TREE
+cd "$tree" || die "cannot cd to the temp tree"
+
+set -f
+IFS='
+'
+for check in $checks; do
+  for b in $batches; do
+    set -- $(cat "$b")
+    "$check" "$@"
+    rc=$?
+    case $rc in
+      0) : ;;
+      1) overall=1 ;;
+      *) echo "pre-commit: ${check##*/} could not check (exit $rc) -- a check that cannot run blocks"
+         overall=1 ;;
+    esac
+  done
+done
+unset IFS
+set +f
+
+finish
