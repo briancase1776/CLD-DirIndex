@@ -1,0 +1,2 @@
+INDEX scripts/symbol-lookup/
+F lookup.sh   Symbol lookups over the <file>.cld indexes: find, dupecheck, deps, rdeps

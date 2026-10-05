@@ -1,0 +1,2 @@
+INDEX .claude/skills/symbol-dupecheck-js/
+F SKILL.md   Is a JavaScript symbol name already taken: lookup.sh dupecheck NAME --lang js

@@ -62,11 +62,23 @@ CLD_EXTRA_SPECIES=${CLD_EXTRA_SPECIES-""}
 CLD_SYM_MISS_EXTS=${CLD_SYM_MISS_EXTS-"js"}
 CLD_DECL_RE=${CLD_DECL_RE-'^[[:space:]]*class |^function '}
 CLD_SYM_MISS_SKIP_RE=${CLD_SYM_MISS_SKIP_RE-'tests/\|vendor/\|node_modules/'}
+
+# The languages SYM-MISS watches. js is the rule above (CLD_SYM_MISS_EXTS
+# and CLD_DECL_RE); py, sh and bash use the checker's own declaration
+# patterns, on files whose language (see CLD_LANG_EXT_MAP) is that one.
+CLD_SYM_MISS_LANGS=${CLD_SYM_MISS_LANGS-"js"}
+
+# Extension -> language, as ext:lang pairs, for the language of a symbol
+# index's target. Step 3 of 4: a "lang <name>" line in the index's
+# header block wins, then the target's #! line, then this map, then
+# file(1) if it is installed.
+CLD_LANG_EXT_MAP=${CLD_LANG_EXT_MAP-"js:js py:py sh:sh bash:bash"}
 }
 
 unset CLD_SKIP_RE CLD_INDEXABLE_EXTS CLD_NOT_DIR_INDEX_RE \
       CLD_NOT_SYMBOL_INDEX_RE CLD_EXTRA_SPECIES \
-      CLD_SYM_MISS_EXTS CLD_DECL_RE CLD_SYM_MISS_SKIP_RE
+      CLD_SYM_MISS_EXTS CLD_DECL_RE CLD_SYM_MISS_SKIP_RE \
+      CLD_SYM_MISS_LANGS CLD_LANG_EXT_MAP
 cld_config_defaults
 
 # Host overrides. Last word wins.

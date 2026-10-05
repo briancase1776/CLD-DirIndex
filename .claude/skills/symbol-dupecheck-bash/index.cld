@@ -1,0 +1,2 @@
+INDEX .claude/skills/symbol-dupecheck-bash/
+F SKILL.md   Is a bash symbol name already taken: lookup.sh dupecheck NAME --lang bash

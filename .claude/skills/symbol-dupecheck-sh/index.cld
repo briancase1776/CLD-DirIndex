@@ -1,0 +1,2 @@
+INDEX .claude/skills/symbol-dupecheck-sh/
+F SKILL.md   Is a POSIX sh symbol name already taken: lookup.sh dupecheck NAME --lang sh
