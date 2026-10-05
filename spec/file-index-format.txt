@@ -1,0 +1,102 @@
+File Symbol Index Format
+========================
+
+PURPOSE
+  Instructs Claude how to write and maintain a file-level symbol index.
+  Lives in spec/file-index-format.txt -- do not copy into index files.
+
+FILE
+  Named <full-source-filename>.cld -- extension included
+  (lib/errors.js -> lib/errors.js.cld) -- placed in the same directory
+  as the file it describes.
+  Line 1 "FILE <path>" is the index's IDENTITY: the target file must
+  exist, and no two indexes may claim the same target. Enforced
+  mechanically by scripts/symbol-audit/check.sh (pre-commit on staged
+  .cld files; sweep the whole tree by running it with no args).
+
+FORMAT
+  Line 1 : FILE <path/filename>
+  Lines 2+: <T> <symbol>    <description>
+
+  T = F (function/method/getter -- callable), C (class),
+      K (constant/pattern), E (event),
+      D (data field -- durable state a class or module holds),
+      G (module global -- a name the file hangs on the global object),
+      R (load-time effect -- a top-level statement executed at import
+         that names no symbol of its own: a self-registration call, an
+         installed monkey-patch, an anonymous listener. Its name field
+         is a one-token parenthesised placeholder, e.g. (error-listener))
+
+RULES
+  - The letter comes from HOW THE SYMBOL IS DECLARED IN SOURCE, never
+    from its name. Where a project uses type-prefixed names, the prefix
+    names a TYPE, and for a method that is its RETURN type -- #aLayers
+    (a field holding an array) and #aStackFrom (a method returning one)
+    both carry "a", yet one is D and the other F. If you cannot see the
+    declaration, open the file.
+  - D vs K: K is a value that never changes and is not per-instance;
+    D is storage. A field holding an immutable string is K.
+  - One entry per symbol worth knowing about -- and public getters ARE
+    worth knowing about, never skip them. Where the data model is
+    class + private fields + public getters, the getter list IS the
+    class's public surface: it is how a reader learns to access the
+    data. (Ruled 2026-08-12, Brian, reversing an earlier
+    skip-pass-through-getters rule.)
+  - The name is the symbol's source name, and it must be a single
+    whitespace-delimited token: it is field 2 of the line, and field 2
+    is the key every lookup skill matches on. QUALIFY it Owner.name
+    whenever the bare name would not be unique within this index --
+    qualification is always permitted and never wrong. A construct
+    with no source name (an anonymous listener, a bare registration
+    call) takes a one-token parenthesised placeholder under R, e.g.
+    R (error-listener). A symbol whose source name IS an accessor
+    keyword (get, set, static, async) must be entered qualified
+    (CacheDB.get) -- the bare keyword is indistinguishable from a
+    leaked accessor prefix, and the checker rejects it.
+  - A missing brief is a SOURCE defect, not an index defect. Use the
+    brief as the primary source for the description when it exists;
+    when it does not, write the description from the code and move on.
+    No hand-maintained marker, and no checker finding -- documentation
+    coverage is a question about source, and answering it is not this
+    toolkit's job.
+  - The description has no length limit. .cld files are machine-read
+    and are exempt from any project column limit. The test is not
+    brevity, it is that every clause is load-bearing -- design
+    rationale and ruled-out alternatives BELONG here; they are the
+    thing the index has that the source does not.
+  - ONE PHYSICAL LINE PER ENTRY. Never wrap an entry onto a
+    continuation line; prose that will not fit an entry belongs in a
+    PROSE block (below).
+  - Quotes are allowed for literal values, key names, or event strings.
+  - No trailing period.
+  - Separate symbol from description by two or more spaces. Align
+    within a block when it is free; the C line may set its own column.
+    NEVER re-pad an existing file to admit one longer name -- an
+    overhang is not a violation.
+  - Keep current: update in the same commit when a symbol is added,
+    removed, or renamed.
+
+PROSE
+  A .cld may carry free prose in two places and nowhere else: a HEADER
+  block between line 1 and the first entry, and trailing RULE blocks
+  after the last entry. Both are for what no entry can hold -- a local
+  dialect declaration, or a standing constraint aimed at the next
+  writer. Entries themselves are never wrapped.
+  Every prose line MUST begin with a lowercase word or the literal
+  RULE. Why: field 2 of every line is scanned by the dupecheck lookup,
+  and a prose line whose second word looks like a symbol produces a
+  false positive (found live: a RULE paragraph in a style index
+  answering for a symbol named SUPPRESSED). Every matcher skips lines
+  whose first field is not a single capital type letter; keep prose
+  shaped so that guard holds.
+
+EXAMPLE (illustrative file; note the qualified names, D, G, and R)
+  FILE lib/example.js
+  C ExamplePanel          Loads the example sub-section HTML fragments
+  F ExamplePanel.#load    Fetches each section HTML in order and appends it
+  C ExampleSection        Manages the example panel settings
+  D #oHooks               Callback bundle handed in by core at construction
+  K #kDefaults            Default settings used for init and reset
+  F ExampleSection.#load  Loads persisted settings and restores UI inputs
+  G ExampleGlobal         Name the file hangs on the global object
+  R (resize-listener)     Anonymous window resize listener installed at import

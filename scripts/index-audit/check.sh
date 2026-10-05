@@ -45,8 +45,14 @@
 
 set -u
 
-CLD_REPO=$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null) || CLD_REPO=$(pwd)
-. "$(dirname "$0")/../cld-config.sh"
+# The repo checked is the one the CALLER stands in (found from the
+# current directory by cld-lib.sh), never the one this script lives in.
+# cld_init leaves us at the repo root, and every path below is
+# root-relative; arguments are translated with cld_arg.
+CLD_HERE=$(CDPATH= cd "$(dirname "$0")" && pwd) || exit 2
+. "$CLD_HERE/../cld-lib.sh"
+cld_init
+. "$CLD_HERE/../cld-config.sh"
 
 OUT=$(mktemp)
 BLOCK=$(mktemp)
@@ -255,18 +261,13 @@ process_file() {
   esac
 }
 
-list_all_files() {
-  if git rev-parse --show-toplevel >/dev/null 2>&1; then
-    git ls-files
-  else
-    find . -type f | sed 's,^\./,,'
-  fi
-}
-
+# A directory argument is a git pathspec taken literally (cld_ls_under),
+# so lib, lib/, ./lib and an absolute path all name the same tree and
+# "." is the whole repo -- no regex is ever built from an argument.
 process_path() {
-  p="$1"
+  p=$(cld_arg "$1")
   if [ -d "$p" ]; then
-    list_all_files | grep "^$p/\|^$p\$" | while IFS= read -r f; do
+    cld_ls_under "$p" | while IFS= read -r f; do
       process_file "$f"
     done
   else
@@ -275,7 +276,7 @@ process_path() {
 }
 
 if [ "$#" -eq 0 ]; then
-  list_all_files | while IFS= read -r f; do
+  cld_ls_files | while IFS= read -r f; do
     process_file "$f"
   done
 else

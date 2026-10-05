@@ -1,4 +1,6 @@
 INDEX scripts/
+F cld-lib.sh        Shared shell library: repo root from the caller's cwd, path spelling, tracked-file listing
 F cld-config.sh     Shared config loader: defaults plus the host repo cld.conf
 D index-audit/      Directory-index freshness checker
-D git-hooks/        Pre-commit dispatcher, the drop-in gate, and the installer
+D symbol-audit/     Symbol-index checker; sibling of index-audit/
+D git-hooks/        Pre-commit dispatcher, the drop-in gates, and the installer

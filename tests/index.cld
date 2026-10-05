@@ -1,2 +1,4 @@
 INDEX tests/
-F run-tests.sh   Fixture-based suite asserting every finding code fires and stays quiet correctly
+F run-tests.sh   Runner: every cases/*.sh in name order, each in its own shell, combined totals
+F lib.sh         Shared helpers: the fixture repo builder and the assertion functions
+D cases/         One case file per area, each asserting its findings fire and stay quiet correctly

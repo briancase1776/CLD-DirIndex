@@ -1,0 +1,6 @@
+INDEX tests/cases/
+F 00-foundation.sh    Shared ground: cld-lib.sh, repo and path resolution, the temp-tree contract, the loader and cld.conf
+F 10-index-audit.sh   Directory-index checker: ORPHAN, NOENTRY, BADHDR, WRONGTYPE
+F 20-symbol-audit.sh  Symbol-index checker: SYM-DEAD, SYM-NAME, SYM-DUP, SYM-HDR, SYM-KEY, SYM-MISS
+F 30-gate.sh          Real commits through the installed hooks, both gates
+F 40-combined.sh      A host running both checkers: adopt-both config, and where the two disagree
