@@ -4,13 +4,22 @@ Directory Index Format
 PURPOSE
   Instructs Claude how to write and maintain a directory index file.
   Lives in spec/dir-index-format.txt -- do not copy into index files.
+  The other species, the per-file symbol index, is
+  spec/file-index-format.txt.
 
 FILE
-  Named index.cld, placed in the directory it describes.
+  Named index.cld, placed in the directory it describes. Only a file
+  named exactly index.cld is a directory index, and an index.cld is
+  never read as a symbol index, whatever its line 1 says.
 
 FORMAT
   Line 1 : INDEX <path/>
-  Lines 2+: <T> <name>    <description>
+  Lines 2+: <T> <name>  <description>
+
+  <path/> is the directory's path from the repo root, with a trailing
+  slash: INDEX lib/utils/. The root index is INDEX ./ (INDEX . is
+  accepted too). The path is compared after normalising, so lib,
+  ./lib/ and lib/ all name lib/.
 
 TYPE LETTERS
   The letters follow find(1)'s -type codes, uppercased, so there is
@@ -36,41 +45,75 @@ TYPE LETTERS
   staged, a /dev listing, a distro tree -- not because a repo will
   produce them.
 
+WHAT GETS AN ENTRY
+  - Every indexable file in the directory, and every subdirectory. An
+    indexable file is one whose extension is in CLD_INDEXABLE_EXTS
+    (cld.conf; default js md txt html css json sh). A .cld file is never
+    indexable: an index never lists itself or a symbol index.
+  - Other files (images, binaries, extensionless files such as LICENSE)
+    may be listed or left out; nothing requires them.
+  - A file or tree that should carry no entry at all -- vendored,
+    generated, build output -- is named in CLD_SKIP_RE (cld.conf). That
+    is the SINGLE place a "do not index this" decision is recorded;
+    there is no "obvious enough to omit" exception, because an
+    unskipped indexable file with no entry blocks the commit (NOENTRY).
+
 RULES
-  - One entry per file/subdir; skip generated files and build artifacts.
-  - Where a file carries a brief marker at the top (conventionally
-    @brief), use it as the primary source when writing the description.
-    If it is missing, append [NO BRIEF] to the entry and ask. [NO BRIEF]
-    entries are greppable -- do not remove until the brief is added.
-    Nothing mechanical checks this: a missing brief is a defect in the
+  - One entry per thing. One physical line per entry.
+  - Where a file carries a brief at the top (conventionally @brief), use
+    it as the primary source for the description. When it has none,
+    write the description from the file and move on. No hand-maintained
+    marker, and no checker finding: a missing brief is a defect in the
     source file, not in the index.
-  - Write the shortest accurate description possible. If it still
-    needs more than one clause, leave it -- that flags the file for
-    splitting. Don't force it short and don't pad to fill it out.
-  - No semicolons -- a description that needs one flags a file to audit
-    for splitting.
+  - Write the shortest accurate description possible. If it still needs
+    more than one clause (a semicolon), leave it that way -- that flags
+    the file for a look at splitting. Don't force it short and don't pad
+    it out.
   - No quotes. No trailing period.
-  - Align all descriptions to the same column within the file.
-  - Omit files whose purpose is obvious from the directory name alone.
-  - Keep this index current: when you add, remove, rename, or edit a
-    file in this directory, update the index in the same commit.
+  - Separate the name from the description by TWO OR MORE spaces (see
+    NAMES WITH SPACES). Align the descriptions to one column when it is
+    free; NEVER re-pad an existing file to admit one longer name -- an
+    overhang is not a violation.
+  - Keep this index current: when you add, remove, or rename a file or
+    subdirectory, update the index in the same commit. When an edit
+    changes what a file does, update its description.
 
 NAMES WITH SPACES
   An entry name may contain single spaces ("Tree Palette.html"). The
-  description is separated from the name by TWO OR MORE spaces -- that
-  gap, not a column rule, is what the checker splits on.
+  description is separated from the name by two or more spaces. The
+  checker does not rely on that gap or on any column: it resolves a
+  name by trying the entry's word prefixes, longest first, against what
+  is really in the directory, so a ragged or overhanging entry is still
+  read correctly.
 
 ENFORCEMENT
-  scripts/index-audit/check.sh reads this format mechanically. It blocks
-  a commit on ORPHAN (an entry names a missing target) and on NOENTRY
-  (an indexable file has no entry), and warns on BADHDR (line 1 is not
-  "INDEX <path/>") and WRONGTYPE (the entry's letter disagrees with what
-  the thing actually is). The skip list in cld.conf is the SINGLE place
-  a "do not index this" decision is recorded.
+  scripts/index-audit/check.sh reads this format mechanically.
+
+  Blocks a commit:
+    ORPHAN     an entry names something that is not in the directory
+               (including a path the commit deletes or renames away)
+    NOENTRY    an indexable, unskipped file has no entry
+  Warns only:
+    BADHDR     line 1 is not "INDEX <path/>" (the body is still checked;
+               a line 1 that is not a header is read as an entry)
+    WRONGPATH  line 1 names a directory other than the one the index
+               sits in
+    WRONGTYPE  the entry's letter disagrees with what the thing is
+    CRLF       the file has CR-LF line endings (it is read with the CRs
+               stripped, so the other findings still hold)
+  Warns only, and only in a sweep (no argument, or a directory
+  argument), never at commit time:
+    NOINDEX    a directory holding indexable files has no index.cld
+    NODENTRY   a subdirectory holding tracked, unskipped files has no
+               entry in its parent's index.cld
 
   A dangling symlink is NOT an orphan. The link is present in the
   directory and the entry describing it is telling the truth; where it
   points is the target's problem, not the index's.
+
+  An index.cld that is another format altogether, one that only shares
+  the name, is exempted with CLD_NOT_DIR_INDEX_RE (cld.conf); its
+  directory then counts as having no index.
 
 EXAMPLE
   INDEX lib/

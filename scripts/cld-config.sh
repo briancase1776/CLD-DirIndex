@@ -30,7 +30,8 @@
 
 cld_config_defaults() {
 # Paths that legitimately carry no index. A grep BRE, alternated with
-# \| -- it is passed to plain `grep`, not `grep -E`.
+# \| -- it is passed to plain `grep`, not `grep -E`. (\| in a BRE is a
+# GNU and BusyBox extension; POSIX does not define it.)
 CLD_SKIP_RE=${CLD_SKIP_RE-'\.git/\|node_modules/\|vendor/\|dist/\|build/'}
 
 # Extensions a DIRECTORY index is expected to list. A file outside this

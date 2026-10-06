@@ -2,9 +2,9 @@
 name: symbol-dupecheck-bash
 description: Check whether a bash symbol name (function, method, class, constant) is already defined before you name a new one, through the symbol indexes (<file>.cld). Reach for it on "is <name> already taken", "is this method name free", "does Foo already exist" at the moment of naming in bash code. Takes the exact symbol name; reports FREE or the files that already define it. With no argument, prints usage.
 ---
-Run, from the repo root:
+Run, from anywhere in the repo:
 
-    sh scripts/symbol-lookup/lookup.sh dupecheck "$ARGUMENTS" --lang bash
+    sh "$(git rev-parse --show-toplevel)/scripts/symbol-lookup/lookup.sh" dupecheck "$ARGUMENTS" --lang bash
 
 - `FREE <name>`: no bash symbol index defines it.
 - `TAKEN <name>`, then one line per definition,

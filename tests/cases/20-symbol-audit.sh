@@ -699,10 +699,13 @@ for s in symbol-find-js symbol-find-py symbol-find-sh symbol-find-bash \
   expect_hit "skill $s: listed in .claude/skills/index.cld" "D $s/" "$(cat "$SK/index.cld")"
   case "$s" in
     symbol-deps)
-      line=$(grep 'lookup.sh deps' "$f" | head -n 1)
+      line=$(grep -e 'lookup\.sh"* deps' "$f" | head -n 1)
       out=$(cd "$d" && eval "$(echo "$line" | sed 's/^ *//; s,"FILE",lib/p.bash,')" 2>&1)
       expect_hit "skill $s: its deps command runs" "I ./p.sh  --  ping" "$out"
-      line=$(grep 'lookup.sh rdeps' "$f" | head -n 1)
+      # FILE is relative to where you stand, and the command works there
+      out=$(cd "$d/lib" && eval "$(echo "$line" | sed 's/^ *//; s,"FILE",p.bash,')" 2>&1)
+      expect_hit "skill $s: its deps command runs from a subdirectory" "I ./p.sh  --  ping" "$out"
+      line=$(grep -e 'lookup\.sh"* rdeps' "$f" | head -n 1)
       out=$(cd "$d" && eval "$(echo "$line" | sed 's/^ *//; s,"TARGET",lib/p.sh,')" 2>&1)
       expect_hit "skill $s: its rdeps command runs" "lib/p.bash  I ./p.sh" "$out" ;;
     *)
@@ -714,6 +717,8 @@ for s in symbol-find-js symbol-find-py symbol-find-sh symbol-find-bash \
         symbol-find-*)      expect_hit "skill $s: finds the $l definition only" "F ping  in  lib/p.$l  --  Pings, in $l" "$out" ;;
         symbol-dupecheck-*) expect_hit "skill $s: TAKEN in $l" "TAKEN ping (among $l indexes)" "$out" ;;
       esac
+      sub=$(cd "$d/lib" && ARGUMENTS=ping && eval "$line" 2>&1)
+      expect_hit "skill $s: its command works from a subdirectory too" "ping  in  lib/p.$l  --" "$sub"
       n=$(printf '%s\n' "$out" | grep -c ' in  lib/p\.')
       expect_eq "skill $s: and no other language" "1" "$n" ;;
   esac

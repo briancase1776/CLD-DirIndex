@@ -1,6 +1,6 @@
 ---
 name: index-audit-partial
-description: Check that the directory indexes you are about to commit still tell the truth -- run the mechanical index-freshness check over the STAGED diff, the same check the pre-commit hook runs. Reach for it before committing when you added, renamed, or removed a file, or to understand why the index-audit gate just blocked a commit. With no argument, audits the current staged diff.
+description: Check that the directory and symbol indexes you are about to commit still tell the truth -- run the whole pre-commit gate (index-audit and symbol-audit) over the STAGED diff in its read-only audit mode, exactly as the hook would. Reach for it before committing when you added, renamed, or removed a file, or to understand why the gate just blocked a commit. With no argument, audits the current staged diff.
 ---
 Purpose: the pre-commit gate blocks a commit whose indexes are out of
 sync with what it commits. This skill runs the SAME dispatcher the hook
@@ -36,10 +36,14 @@ Procedure:
      directory's index.cld. Fix by adding the entry (with its
      brief-sourced gist). The skip list in cld.conf is the only place a
      "do not index" decision lives, so an unskipped file MUST be indexed.
-   - SYM-* [BLOCK]: the symbol-index gate (SYM-HDR, SYM-DEAD, SYM-NAME,
-     SYM-DUP, SYM-KEY) runs in the same pass; a <file>.cld left behind by
-     a deletion or rename shows as SYM-DEAD.
-   - Anything marked warn (BADHDR, WRONGTYPE, SYM-MISS, ...): advisory.
+   - SYM-HDR, SYM-DEAD, SYM-NAME, SYM-DUP, SYM-KEY [BLOCK]: the
+     symbol-index check runs in the same pass. A <file>.cld left behind
+     by a deletion or rename shows as SYM-DEAD: rename or remove it with
+     its source.
+   - Advisory, never blocking: BADHDR, WRONGPATH, WRONGTYPE and CRLF
+     (directory indexes); SYM-CRLF, SYM-STALE and SYM-MISS (symbol
+     indexes). NOINDEX and NODENTRY never appear here: they are
+     sweep-only.
 
 4. Report blocking versus advisory, and OFFER each fix (which line to
    drop, which entry to add). Do NOT apply them here.
@@ -51,8 +55,8 @@ Notes:
 - --audit never runs a foreign hook that install.sh chained; only the
   .cld checks.
 - To sweep the whole tree instead of the staged set, run
-  scripts/index-audit/check.sh with no arguments. That is the health
-  check, not the gate.
+  scripts/index-audit/check.sh and scripts/symbol-audit/check.sh with
+  no arguments. That is the health check, not the gate.
 
 Scope guard: READ-ONLY. This skill runs the dispatcher in audit mode and
 reports; it never edits an index and never stages anything. Applying a

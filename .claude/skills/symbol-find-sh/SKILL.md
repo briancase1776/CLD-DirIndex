@@ -2,9 +2,9 @@
 name: symbol-find-sh
 description: Find which POSIX sh file defines a function, class, method, or constant through the symbol indexes (<file>.cld) instead of grepping source. Reach for it on "which file defines Foo", "where does Thing.load live", "what defines X" in POSIX sh code. Takes the exact symbol name, bare or qualified (Owner.name); with no argument, prints usage.
 ---
-Run, from the repo root:
+Run, from anywhere in the repo:
 
-    sh scripts/symbol-lookup/lookup.sh find "$ARGUMENTS" --lang sh
+    sh "$(git rev-parse --show-toplevel)/scripts/symbol-lookup/lookup.sh" find "$ARGUMENTS" --lang sh
 
 - Each hit is one line, `<T> <name>  in  <file>  --  <description>`. Open
   the symbol in that file: the description points you at it, the source

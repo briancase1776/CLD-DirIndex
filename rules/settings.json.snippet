@@ -4,7 +4,9 @@
     "toolkit. Merge the hooks block into the repo's .claude/settings.json.",
     "SessionStart reinstalls the git hooks on every session, so a fresh",
     "clone is gated from its first commit without anyone remembering to",
-    "run the installer."
+    "run the installer, and an older installed dispatcher is replaced.",
+    "install.sh installs where git runs hooks: the hooks directory every",
+    "linked worktree shares, or core.hooksPath when that is set."
   ],
   "hooks": {
     "SessionStart": [

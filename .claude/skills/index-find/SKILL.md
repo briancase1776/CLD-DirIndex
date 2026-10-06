@@ -3,16 +3,20 @@ name: index-find
 description: Find which file or directory handles something, through the directory indexes (index.cld) instead of grepping the whole tree. Reach for it on "where's the file that does X", "which dir handles Y", "where does Z live". Takes an exact filename or a paraphrase of what the file does; with no argument, prints usage.
 ---
 Purpose: answer "where does X live" without walking the tree. The map is
-the directory indexes -- one index.cld per directory, each line an F
-(file) or D (subdir) entry with a one-line gist. This skill greps that
-map so a cold session finds the right file by what it DOES, not by
-guessing its name. It is the invocable form of the standing rule "when
-looking for a file, check index.cld first".
+the directory indexes -- one index.cld per directory, each entry a type
+letter (F file, D subdir, L symlink; P S B C are rare), a name and a
+one-line gist. This skill greps that map so a cold session finds the
+right file by what it DOES, not by guessing its name. It is the
+invocable form of the standing rule "when looking for a file, check
+index.cld first". (For a function or class rather than a file, the
+symbol-find-* skills search the per-file symbol indexes.)
 
-The map is every index.cld EXCEPT those the host repo excludes in
-`cld.conf` as `CLD_NOT_DIR_INDEX_RE` -- same filename, different format.
-The base set is `git ls-files '*index.cld'`; filter that regex out of it
-when the repo sets one.
+The map is every tracked index.cld EXCEPT those the host repo excludes
+in `cld.conf`: `CLD_NOT_DIR_INDEX_RE` (same filename, different format)
+and `CLD_SKIP_RE` (trees that carry no index). The base set is
+`git ls-files 'index.cld' '*/index.cld'` (not `'*index.cld'`, which also
+matches the symbol index of a file named like `myindex`); filter those
+regexes out of it with `grep -v` when the repo sets them.
 
 Procedure:
 
@@ -41,8 +45,10 @@ Procedure:
 
 Notes:
 - The index is the map, not the territory: a hit points you AT the file;
-  read the file for the detail. A [NO BRIEF] entry is a weak gist -- open
-  the file to be sure.
+  read the file for the detail. A terse or vague gist is a weak one --
+  open the file to be sure.
+- Lines 2+ whose first field is not a single capital letter are not
+  entries; line 1 is the INDEX header.
 - If a grep of the indexes errors, or an index.cld is malformed enough
   that the lookup cannot run, that is a bug in the substrate -- report
   it, do not fake a result.

@@ -2,9 +2,9 @@
 name: symbol-dupecheck-py
 description: Check whether a Python symbol name (function, method, class, constant) is already defined before you name a new one, through the symbol indexes (<file>.cld). Reach for it on "is <name> already taken", "is this method name free", "does Foo already exist" at the moment of naming in Python code. Takes the exact symbol name; reports FREE or the files that already define it. With no argument, prints usage.
 ---
-Run, from the repo root:
+Run, from anywhere in the repo:
 
-    sh scripts/symbol-lookup/lookup.sh dupecheck "$ARGUMENTS" --lang py
+    sh "$(git rev-parse --show-toplevel)/scripts/symbol-lookup/lookup.sh" dupecheck "$ARGUMENTS" --lang py
 
 - `FREE <name>`: no py symbol index defines it.
 - `TAKEN <name>`, then one line per definition,

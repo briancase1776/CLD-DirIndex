@@ -4,28 +4,85 @@ File Symbol Index Format
 PURPOSE
   Instructs Claude how to write and maintain a file-level symbol index.
   Lives in spec/file-index-format.txt -- do not copy into index files.
+  The other species, the directory index, is spec/dir-index-format.txt.
 
 FILE
   Named <full-source-filename>.cld -- extension included
   (lib/errors.js -> lib/errors.js.cld) -- placed in the same directory
   as the file it describes.
   Line 1 "FILE <path>" is the index's IDENTITY: the target file must
-  exist, and no two indexes may claim the same target. Enforced
-  mechanically by scripts/symbol-audit/check.sh (pre-commit on staged
-  .cld files; sweep the whole tree by running it with no args).
+  exist, the index must be <target>.cld beside it, and no two indexes
+  may claim the same target (paths are compared in one spelling, so
+  ./lib/x.js and lib//x.js are lib/x.js). Enforced mechanically by
+  scripts/symbol-audit/check.sh (at commit time on the staged files;
+  run it with no arguments to sweep the whole tree).
+
+  A file named index.cld is always a DIRECTORY index and is never read
+  as a symbol index. So a source file named exactly "index", with no
+  extension, cannot have a symbol index: its <name>.cld would be
+  index.cld. This is a known clash; rename the source if it needs one.
 
 FORMAT
   Line 1 : FILE <path/filename>
-  Lines 2+: <T> <symbol>    <description>
+  Lines 2+: <T> <name>  <description>
 
-  T = F (function/method/getter -- callable), C (class),
-      K (constant/pattern), E (event),
-      D (data field -- durable state a class or module holds),
-      G (module global -- a name the file hangs on the global object),
-      R (load-time effect -- a top-level statement executed at import
-         that names no symbol of its own: a self-registration call, an
-         installed monkey-patch, an anonymous listener. Its name field
-         is a one-token parenthesised placeholder, e.g. (error-listener))
+  <path/filename> is the target's path from the repo root.
+
+TYPE LETTERS
+  One alphabet for every language; what each letter covers is spelled
+  out per language below.
+
+    F  callable -- function, method, getter
+    C  class
+    K  unchanging value -- a constant or fixed pattern
+    D  stored data -- durable state a class or module holds
+    E  event
+    G  globally visible name -- a name the file hangs on the global
+       object, or exports into its environment
+    R  load-time effect -- a top-level statement executed at load that
+       names no symbol of its own (a self-registration call, an
+       installed monkey-patch, an anonymous listener, a "set -eu"). Its
+       name field is a one-token parenthesised placeholder, e.g.
+       (error-listener)
+    I  dependency -- a module or file this one loads. Its name field is
+       the module or path EXACTLY AS WRITTEN IN SOURCE
+       (I ../../icc-lib/scripts/lib, I os.path, I ./util.js); the
+       description says what is used from it
+
+  Which letters a language may use is not checked (deferred).
+
+LANGUAGES
+  js     as above. F function/method/getter, C class, K constant,
+         D field or module state, E event, G global, R load-time effect,
+         I import or require.
+  py     F def and async def (methods and @property included), C class,
+         K module constant, D attribute or module state, R top-level
+         side effect (if __name__ == "__main__" included), I import and
+         from-import. E and G are unused.
+  bash   F name() and function name, K readonly and declare -r, D global
+         variable or array, G export, R set -euo pipefail, trap and
+         other top-level effects, I source and . (dot). C and E are
+         unused.
+  sh     as bash, but F is name() only (sh has no function keyword), and
+         I is . (dot), or source if the script uses it.
+
+  The language of an index's target is decided in this order, the
+  first step that answers winning:
+    1. a prose line "lang <name>" in the index's HEADER block (between
+       line 1 and the first entry), e.g. "lang py" -- lowercase, so it
+       is an ordinary prose line;
+    2. the target's #! line: bash, sh, python or python3, node,
+       directly or through "#!/usr/bin/env X";
+    3. the target's extension, through CLD_LANG_EXT_MAP in cld.conf
+       (ext:lang pairs, default "js:js py:py sh:sh bash:bash");
+    4. "file -b", when a file(1) command is installed (skipped silently
+       when it is not): Bourne-Again shell script is bash, POSIX shell
+       script is sh, Python script is py, JavaScript source or Node.js
+       script is js. It is last because it calls some JavaScript "C
+       source" and a tiny file "ASCII text";
+    5. otherwise unknown.
+  The language decides the js-only accessor rule (below), which
+  declarations SYM-MISS looks for, and what the lookups' --lang keeps.
 
 RULES
   - The letter comes from HOW THE SYMBOL IS DECLARED IN SOURCE, never
@@ -42,17 +99,25 @@ RULES
     class's public surface: it is how a reader learns to access the
     data. (Ruled 2026-08-12, Brian, reversing an earlier
     skip-pass-through-getters rule.)
+  - One I entry per module or path the file loads, written as the
+    source writes it. That is what lets "what does this file use" and
+    "what uses this file" be answered from the indexes alone.
   - The name is the symbol's source name, and it must be a single
     whitespace-delimited token: it is field 2 of the line, and field 2
-    is the key every lookup skill matches on. QUALIFY it Owner.name
-    whenever the bare name would not be unique within this index --
-    qualification is always permitted and never wrong. A construct
-    with no source name (an anonymous listener, a bare registration
-    call) takes a one-token parenthesised placeholder under R, e.g.
-    R (error-listener). A symbol whose source name IS an accessor
-    keyword (get, set, static, async) must be entered qualified
-    (CacheDB.get) -- the bare keyword is indistinguishable from a
-    leaked accessor prefix, and the checker rejects it.
+    is the key every lookup matches on. QUALIFY it Owner.name whenever
+    the bare name would not be unique within this index --
+    qualification is always permitted and never wrong. I entries are
+    keyed apart from symbols: an I token must be unique among the I
+    entries, and never clashes with a symbol of the same spelling.
+  - A construct with no source name (an anonymous listener, a bare
+    registration call) takes a one-token parenthesised placeholder
+    under R, e.g. R (error-listener).
+  - In a js index, a symbol whose source name IS an accessor keyword
+    (get, set, static, async) must be entered qualified (CacheDB.get):
+    the bare keyword is indistinguishable from a leaked accessor
+    prefix, and the checker rejects it. The keyword list is fixed in
+    the checker, not configurable. The rule is js only, and never
+    applies to I entries.
   - A missing brief is a SOURCE defect, not an index defect. Use the
     brief as the primary source for the description when it exists;
     when it does not, write the description from the code and move on.
@@ -69,19 +134,20 @@ RULES
     PROSE block (below).
   - Quotes are allowed for literal values, key names, or event strings.
   - No trailing period.
-  - Separate symbol from description by two or more spaces. Align
-    within a block when it is free; the C line may set its own column.
-    NEVER re-pad an existing file to admit one longer name -- an
-    overhang is not a violation.
-  - Keep current: update in the same commit when a symbol is added,
-    removed, or renamed.
+  - Separate the name from the description by two or more spaces.
+    Align the descriptions to one column when it is free; NEVER re-pad
+    an existing file to admit one longer name -- an overhang is not a
+    violation.
+  - Keep current: update in the same commit when a symbol or a
+    dependency is added, removed, or renamed. Deleting or renaming the
+    source means deleting or renaming its .cld in the same commit.
 
 PROSE
   A .cld may carry free prose in two places and nowhere else: a HEADER
   block between line 1 and the first entry, and trailing RULE blocks
   after the last entry. Both are for what no entry can hold -- a local
-  dialect declaration, or a standing constraint aimed at the next
-  writer. Entries themselves are never wrapped.
+  dialect declaration such as "lang py", or a standing constraint aimed
+  at the next writer. Entries themselves are never wrapped.
   Every prose line MUST begin with a lowercase word or the literal
   RULE. Why: field 2 of every line is scanned by the dupecheck lookup,
   and a prose line whose second word looks like a symbol produces a
@@ -90,7 +156,51 @@ PROSE
   whose first field is not a single capital type letter; keep prose
   shaped so that guard holds.
 
-EXAMPLE (illustrative file; note the qualified names, D, G, and R)
+ENFORCEMENT
+  scripts/symbol-audit/check.sh reads this format mechanically.
+
+  Blocks a commit:
+    SYM-HDR    line 1 is not a known species: FILE and INDEX are built
+               in, CLD_EXTRA_SPECIES (cld.conf) adds others. (An
+               index.cld is never judged here; a bad line 1 there is
+               index-audit's BADHDR.)
+    SYM-DEAD   the target does not exist, or line 1 names none; or a
+               commit deletes or renames away a source and leaves its
+               <file>.cld behind
+    SYM-NAME   the index is not <target>.cld beside its target
+    SYM-DUP    another tracked index claims the same target (checked
+               for the indexes a commit touches, so old twins elsewhere
+               do not block an unrelated commit)
+    SYM-KEY    field 2 is not a usable key: a bare accessor keyword in
+               a js index, an unbalanced parenthesis, or a duplicate key
+  Warns only:
+    SYM-CRLF   the index has CR-LF line endings (it is read with the CRs
+               removed, so the other findings still hold)
+    SYM-STALE  an entry's name does not occur in the target: the last
+               part of field 2 (after the last "."), or an I entry's
+               whole token, as a fixed string. R placeholders are
+               skipped
+    SYM-MISS   a source file that declares symbols has no <file>.cld.
+               js by default (CLD_SYM_MISS_EXTS, CLD_DECL_RE); py, sh and
+               bash when listed in CLD_SYM_MISS_LANGS
+
+  Exempt from every symbol check and every lookup: any index.cld, and
+  whatever CLD_NOT_DIR_INDEX_RE, CLD_NOT_SYMBOL_INDEX_RE or CLD_SKIP_RE
+  (cld.conf) names.
+
+LOOKUPS
+  scripts/symbol-lookup/lookup.sh answers from the indexes, never by
+  grepping source, and matches field 2 as a fixed string:
+    find NAME [--lang L]       which file defines NAME (an entry that is
+                               NAME, or ends in ".NAME")
+    dupecheck NAME [--lang L]  FREE, or TAKEN plus every definition
+    deps FILE                  FILE's I entries
+    rdeps TARGET               every I entry naming TARGET, as written
+                               or as a path suffix once leading ./ ../ /
+                               and $VAR parts are dropped
+  The symbol-find-*, symbol-dupecheck-* and symbol-deps skills call it.
+
+EXAMPLE (illustrative file; note the qualified names, D, G, R and I)
   FILE lib/example.js
   C ExamplePanel          Loads the example sub-section HTML fragments
   F ExamplePanel.#load    Fetches each section HTML in order and appends it
@@ -100,3 +210,14 @@ EXAMPLE (illustrative file; note the qualified names, D, G, and R)
   F ExampleSection.#load  Loads persisted settings and restores UI inputs
   G ExampleGlobal         Name the file hangs on the global object
   R (resize-listener)     Anonymous window resize listener installed at import
+  I ./section-loader.js   fetchSection, used by both #load methods
+
+EXAMPLE (a bash script, with a lang line in its header block)
+  FILE bin/deploy
+  lang bash
+  R (strict-mode)         set -euo pipefail at the top
+  I $HERE/../lib/common.sh  die and log (sourced as . "$HERE/../lib/common.sh")
+  K RELEASE_DIR           Where releases are unpacked, readonly
+  D targets               Array of hosts filled from the command line
+  G DEPLOY_ENV            Exported for the remote hook scripts
+  F deploy_one            Copies one release to one host and switches the link
