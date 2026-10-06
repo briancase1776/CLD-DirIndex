@@ -169,9 +169,11 @@ else
     p=$(cld_arg "$arg")
     if [ "$gone_mode" -eq 1 ]; then
       printf '%s\n' "$p" >> "$W/gone"
-    elif [ -d "$p" ]; then
+    elif [ -d "$p" ] && [ ! -L "$p" ]; then
       # A directory argument is a literal git pathspec (cld_ls_under), so
-      # lib, lib/, ./lib and an absolute path name the same tree.
+      # lib, lib/, ./lib and an absolute path name the same tree. A
+      # symlink to a directory is an entry, not a tree to sweep (the same
+      # rule as index-audit); git lists only the link itself either way.
       cld_ls_under "$p" >> "$W/listed" ||
         cld_die "cannot list tracked files under $p"
     else

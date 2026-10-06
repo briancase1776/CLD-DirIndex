@@ -1,0 +1,2 @@
+INDEX .claude/skills/index-audit-partial/
+F SKILL.md   Run the whole pre-commit gate over the staged diff: pre-commit --audit

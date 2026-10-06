@@ -7,3 +7,4 @@ D spec/                The two index format specs
 D scripts/             The checkers, the shared config loader, the git hooks
 D rules/               Snippets to paste into a host repo
 D tests/               Fixture-based test suite for both checkers
+D .claude/             The Claude Code session hook and the .cld skills

@@ -5,10 +5,12 @@
 # drop-in gates and both checkers are exercised the way a host repo runs
 # them.
 #
-# Routing is tested with STUB checkers that only record how they were
-# called (their arguments, where they ran, what their git sees), so the
-# dispatcher's half of the --gone contract is pinned down independently
-# of the checkers' half. Everything else runs the real checkers.
+# Routing is tested twice. First with STUB checkers that only record how
+# they were called (their arguments, where they ran, what their git
+# sees), so the dispatcher's half of the --gone contract is pinned down
+# independently of the checkers' half; then the same kinds of commit go
+# through the REAL checkers, so the two halves are tested together.
+# Everything else runs the real checkers.
 #
 # Run alone (sh tests/cases/30-gate.sh) or via tests/run-tests.sh.
 
@@ -628,18 +630,6 @@ try_commit "$d" "unrelated deletion"
 expect_rc "an honest deletion is not blocked by someone else's old orphan" 0 "$rc"
 rm -rf "$d"
 
-# known_until <name> <needle> <output> -- a KNOWN gap that a fix will
-# close by making <needle> appear in <output>: KNOWN while it is absent,
-# RESOLVED once it shows. When one prints RESOLVED, replace it with
-#   expect_rc  "<name>" 1 "$crc"
-#   expect_hit "<name>: names it" "<needle>" "$cout"
-known_until() {
-  case "$3" in
-    *"$2"*) known_issue "$1" "gap" "closed" ;;
-    *)      known_issue "$1" "gap" "gap" ;;
-  esac
-}
-
 # A deletion whose index.cld entry stays behind (no symbol index involved).
 d=$(lib_repo)
 echo notes > "$d/lib/notes.txt"
@@ -647,11 +637,17 @@ printf 'INDEX lib/\nF known.js    Indexed\nF notes.txt   Notes\n' > "$d/lib/inde
 stage "$d"
 git -C "$d" commit -qm "notes" >/dev/null 2>&1
 git -C "$d" rm -q lib/notes.txt
-try_commit "$d" "delete, entry stays"; cout=$out; crc=$rc
-known_until "deleting a file whose index.cld entry stays is blocked (needs index-audit --gone)" \
-  "ORPHAN" "$cout"
+n=$(commits "$d")
+try_commit "$d" "delete, entry stays"
+expect_rc  "deleting a file whose index.cld entry stays is blocked" 1 "$rc"
+expect_hit "...as an ORPHAN for that entry" "ORPHAN   lib/index.cld:3  entry 'notes.txt'" "$out"
+expect_eq  "...and nothing landed" "$n" "$(commits "$d")"
 out=$(cd "$d" && $SH scripts/index-audit/check.sh lib/index.cld 2>&1)
 expect_hit "control: the tree really has that ORPHAN" "notes.txt" "$out"
+printf 'INDEX lib/\nF known.js    Indexed\n' > "$d/lib/index.cld"
+git -C "$d" add lib/index.cld
+try_commit "$d" "delete, entry removed"
+expect_rc  "control: the same deletion with its entry removed commits" 0 "$rc"
 rm -rf "$d"
 
 # A deletion whose <file>.cld stays behind (the dir index is updated).
@@ -659,11 +655,15 @@ d=$(lib_repo)
 git -C "$d" rm -q lib/known.js
 printf 'INDEX lib/\n' > "$d/lib/index.cld"
 git -C "$d" add lib/index.cld
-try_commit "$d" "delete, symbol index stays"; cout=$out; crc=$rc
-known_until "deleting a file whose <file>.cld stays is blocked (needs symbol-audit --gone)" \
-  "SYM-DEAD lib/known.js.cld" "$cout"
+try_commit "$d" "delete, symbol index stays"
+expect_rc  "deleting a file whose <file>.cld stays is blocked" 1 "$rc"
+expect_hit "...as SYM-DEAD for the index left behind" "SYM-DEAD lib/known.js.cld" "$out"
+expect_miss "...and not as a directory finding" "index-audit: BLOCKED" "$out"
 out=$(cd "$d" && $SH scripts/symbol-audit/check.sh lib/known.js.cld 2>&1)
 expect_hit "control: the tree really has that SYM-DEAD" "SYM-DEAD lib/known.js.cld" "$out"
+git -C "$d" rm -q lib/known.js.cld
+try_commit "$d" "delete with its symbol index"
+expect_rc  "control: the same deletion with its <file>.cld removed commits" 0 "$rc"
 rm -rf "$d"
 
 # A renamed directory whose "D old/" entry stays behind.
@@ -675,11 +675,185 @@ printf 'INDEX lib/\nF known.js    Indexed\nD sub/        Sub\n' > "$d/lib/index.
 stage "$d"
 git -C "$d" commit -qm "sub" >/dev/null 2>&1
 git -C "$d" mv lib/sub lib/sub2
-try_commit "$d" "rename dir, entry stays"; cout=$out; crc=$rc
-known_until "renaming a directory whose D entry stays is blocked (needs index-audit --gone)" \
-  "ORPHAN" "$cout"
+try_commit "$d" "rename dir, entry stays"
+expect_rc  "renaming a directory whose D entry stays is blocked" 1 "$rc"
+expect_hit "...as an ORPHAN for the D entry" "ORPHAN   lib/index.cld:3  entry 'sub/'" "$out"
+expect_hit "...and the moved index's old header is a WRONGPATH warning" "WRONGPATH" "$out"
 out=$(cd "$d" && $SH scripts/index-audit/check.sh lib/index.cld 2>&1)
 expect_hit "control: the tree really has that ORPHAN" "sub/" "$out"
+printf 'INDEX lib/\nF known.js    Indexed\nD sub2/       Sub\n' > "$d/lib/index.cld"
+printf 'INDEX lib/sub2/\nF s.txt    S\n' > "$d/lib/sub2/index.cld"
+stage "$d"
+try_commit "$d" "rename dir, indexes follow"
+expect_rc  "control: the rename with both indexes updated commits" 0 "$rc"
+expect_miss "...without a WRONGPATH warning once the header follows too" "WRONGPATH" "$out"
+rm -rf "$d"
+
+section "routing reaches the real checkers"
+
+# The stub cases above pin down what the dispatcher hands over; these run
+# the same kinds of commit through the REAL checkers, so the two halves
+# of the --gone contract are tested together. Each has a control: the
+# honest version of the same commit goes through.
+
+# real_repo -- the real checkers, the hooks installed, and an honest base
+# commit with the names the stub cases use: a spaced name, a non-ASCII
+# name with a symbol index, a symlink, a subdirectory.
+real_repo() {
+  _r=$(fixture)
+  $SH "$_r/scripts/git-hooks/install.sh" >/dev/null 2>&1
+  mkdir -p "$_r/lib/sub"
+  printf 'INDEX lib/\nF a.js      A\nF a b.js    Spaced\nF ünï.js    Unicode\nL link.js   Link\nD sub/      Sub\n' > "$_r/lib/index.cld"
+  echo 'function a() {}' > "$_r/lib/a.js"
+  printf 'FILE lib/a.js\nF a     A\n' > "$_r/lib/a.js.cld"
+  echo 'x' > "$_r/lib/a b.js"
+  echo 'const x = 1' > "$_r/lib/ünï.js"
+  printf 'FILE lib/ünï.js\nK x     X\n' > "$_r/lib/ünï.js.cld"
+  ln -s a.js "$_r/lib/link.js"
+  printf 'INDEX lib/sub/\nF s.txt    S\n' > "$_r/lib/sub/index.cld"
+  echo s > "$_r/lib/sub/s.txt"
+  stage "$_r"
+  git -C "$_r" commit -qm base >/dev/null 2>&1
+  printf '%s' "$_r"
+}
+# lib_without <entry-name> -- lib/index.cld of real_repo minus that entry
+lib_without() {
+  printf 'INDEX lib/\nF a.js      A\nF a b.js    Spaced\nF ünï.js    Unicode\nL link.js   Link\nD sub/      Sub\n' |
+    grep -v -F -e " $1 "
+}
+
+d=$(real_repo)
+expect_eq "control: the base commit landed" "1" "$(commits "$d")"
+out=$(cd "$d" && $SH scripts/index-audit/check.sh 2>&1 && $SH scripts/symbol-audit/check.sh 2>&1); rc=$?
+expect_rc "control: the base tree sweeps clean with both checkers" 0 "$rc"
+rm -rf "$d"
+
+# A rename with nothing updated: the old name is an ORPHAN and a dead
+# symbol index, the new name has no entry.
+d=$(real_repo)
+git -C "$d" mv lib/a.js lib/b.js
+try_commit "$d" "rename, nothing updated"
+expect_rc  "a bare rename is blocked" 1 "$rc"
+expect_hit "...the old entry is an ORPHAN" "ORPHAN   lib/index.cld:2  entry 'a.js'" "$out"
+expect_hit "...the new name has no entry" "NOENTRY  lib/b.js:-  no entry in lib/index.cld" "$out"
+expect_hit "...and the old <file>.cld is SYM-DEAD" "SYM-DEAD lib/a.js.cld" "$out"
+git -C "$d" mv lib/a.js.cld lib/b.js.cld
+printf 'FILE lib/b.js\nF a     A\n' > "$d/lib/b.js.cld"
+lib_without a.js > "$d/lib/index.cld"
+printf 'F b.js      B\n' >> "$d/lib/index.cld"
+stage "$d"
+try_commit "$d" "rename, indexes follow"
+expect_rc  "control: the rename with both indexes updated commits" 0 "$rc"
+rm -rf "$d"
+
+# A deleted name holding a space: the entry that names it is found.
+d=$(real_repo)
+git -C "$d" rm -q "lib/a b.js"
+try_commit "$d" "delete a spaced name"
+expect_rc  "deleting a spaced name whose entry stays is blocked" 1 "$rc"
+expect_hit "...as an ORPHAN naming it in full" "entry 'a b.js' names a missing target" "$out"
+lib_without "a b.js" > "$d/lib/index.cld"
+git -C "$d" add lib/index.cld
+try_commit "$d" "delete a spaced name and its entry"
+expect_rc  "control: with its entry removed it commits" 0 "$rc"
+rm -rf "$d"
+
+# A deleted non-ASCII name (git would C-quote it without quotePath=false)
+# whose <file>.cld stays.
+d=$(real_repo)
+git -C "$d" rm -q "lib/ünï.js"
+lib_without "ünï.js" > "$d/lib/index.cld"
+git -C "$d" add lib/index.cld
+try_commit "$d" "delete a non-ASCII name"
+expect_rc  "deleting a non-ASCII name whose <file>.cld stays is blocked" 1 "$rc"
+expect_hit "...as SYM-DEAD, spelled as named" "SYM-DEAD lib/ünï.js.cld" "$out"
+git -C "$d" rm -q "lib/ünï.js.cld"
+try_commit "$d" "delete a non-ASCII name and its index"
+expect_rc  "control: with its <file>.cld removed it commits" 0 "$rc"
+rm -rf "$d"
+
+# A deleted symlink whose L entry stays.
+d=$(real_repo)
+git -C "$d" rm -q lib/link.js
+try_commit "$d" "delete a symlink"
+expect_rc  "deleting a symlink whose entry stays is blocked" 1 "$rc"
+expect_hit "...as an ORPHAN" "entry 'link.js' names a missing target" "$out"
+lib_without link.js > "$d/lib/index.cld"
+git -C "$d" add lib/index.cld
+try_commit "$d" "delete a symlink and its entry"
+expect_rc  "control: with its entry removed it commits" 0 "$rc"
+rm -rf "$d"
+
+# A deleted directory whose D entry stays: the gone directory reaches the
+# parent's index, although no path in it was ever named "sub".
+d=$(real_repo)
+git -C "$d" rm -rq lib/sub
+try_commit "$d" "delete a dir"
+expect_rc  "deleting a directory whose D entry stays is blocked" 1 "$rc"
+expect_hit "...as an ORPHAN for the D entry" "entry 'sub/' names a missing target" "$out"
+lib_without sub/ > "$d/lib/index.cld"
+git -C "$d" add lib/index.cld
+try_commit "$d" "delete a dir and its entry"
+expect_rc  "control: with its entry removed it commits" 0 "$rc"
+rm -rf "$d"
+
+# A file replaced by a directory of the same name is not gone: no
+# ORPHAN for its entry (the letter is now wrong, which only warns).
+d=$(real_repo)
+git -C "$d" rm -q "lib/a b.js"
+mkdir "$d/lib/a b.js"
+echo s > "$d/lib/a b.js/inner.txt"
+stage "$d"
+try_commit "$d" "file becomes dir"
+expect_rc  "a file replaced by a directory is not an ORPHAN" 0 "$rc"
+expect_miss "...no ORPHAN is reported" "ORPHAN" "$out"
+out=$(cd "$d" && $SH scripts/index-audit/check.sh lib/index.cld 2>&1)
+expect_hit "control: the entry's letter is now wrong (WRONGTYPE warns)" "WRONGTYPE" "$out"
+rm -rf "$d"
+
+# New entries the gate must see: a dangling symlink, a symlink to a
+# directory, a non-ASCII name, none of them indexed.
+d=$(real_repo)
+ln -s nowhere "$d/lib/dangle.json"
+ln -s sub "$d/lib/dirlink.js"
+echo y > "$d/lib/nëw.js"
+stage "$d"
+try_commit "$d" "unindexed odd entries"
+expect_rc  "unindexed odd entries are blocked" 1 "$rc"
+expect_hit "...a dangling symlink has no entry" "NOENTRY  lib/dangle.json:-" "$out"
+expect_hit "...a symlink to a directory has no entry" "NOENTRY  lib/dirlink.js:-" "$out"
+expect_hit "...a non-ASCII name has no entry" "NOENTRY  lib/nëw.js:-" "$out"
+{ lib_without nothing; printf 'L dangle.json   Dangles\nL dirlink.js    Points at sub/\nF nëw.js        New\n'; } > "$d/lib/index.cld"
+stage "$d"
+try_commit "$d" "odd entries indexed"
+expect_rc  "control: indexed, they commit" 0 "$rc"
+rm -rf "$d"
+
+# Names that look like options or patterns go through the real checkers
+# without being read as one: a root-level "-dash.js", a file literally
+# named "--gone" (the gate passes both as ./name, and a checker that took
+# ./--gone for the marker would treat every later path as deleted, so the
+# NOENTRY for lib/x*.js, sorted after it, is the proof), and "x*.js".
+d=$(real_repo)
+printf 'INDEX ./\nD lib/        Lib\nD scripts/    Toolkit\n' > "$d/index.cld"
+echo 1 > "$d/-dash.js"
+echo 2 > "$d/--gone"
+echo 3 > "$d/lib/x*.js"
+stage "$d"
+try_commit "$d" "option-like names"
+expect_rc  "option-like names are checked, not obeyed" 1 "$rc"
+expect_hit "...-dash.js has no entry" "NOENTRY  -dash.js:-  no entry in index.cld" "$out"
+expect_hit "...a file named --gone is not the marker: x*.js after it is still checked" "NOENTRY  lib/x*.js:-" "$out"
+expect_no_shell_error "...and nothing crashed" "$out"
+printf 'INDEX ./\nD lib/        Lib\nD scripts/    Toolkit\nF -dash.js     D\nF --gone      G\n' > "$d/index.cld"
+{ lib_without nothing; printf 'F x*.js      Star\n'; } > "$d/lib/index.cld"
+stage "$d"
+try_commit "$d" "option-like names indexed"
+expect_rc  "control: indexed, they commit" 0 "$rc"
+git -C "$d" rm -q -- -dash.js
+try_commit "$d" "delete -dash.js, entry stays"
+expect_rc  "deleting -dash.js whose entry stays is blocked" 1 "$rc"
+expect_hit "...as an ORPHAN" "entry '-dash.js' names a missing target" "$out"
 rm -rf "$d"
 
 finish

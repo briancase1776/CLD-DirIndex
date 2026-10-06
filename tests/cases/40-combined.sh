@@ -1,8 +1,8 @@
 #!/bin/sh
 # tests/cases/40-combined.sh
 # @brief Cases for a host running BOTH checkers on one config: the
-# adopt-both regression, and the places where the two checkers still
-# disagree about the same file.
+# adopt-both regression, and one file both checkers could claim (an
+# index.cld with a bad line 1), which only one of them may judge.
 #
 # Run alone (sh tests/cases/40-combined.sh) or via tests/run-tests.sh.
 
@@ -53,16 +53,15 @@ expect_hit "honest tree on a three-key cld.conf: index-audit clean" "index-audit
 expect_rc  "honest tree on a three-key cld.conf: index-audit exit 0" 0 "$rc"
 rm -rf "$d"
 
-section "where the two checkers disagree"
+section "one file, one policy: a bad index.cld header"
 
-# KNOWN CONFLICT: an index.cld whose line 1 is wrong. index-audit calls
-# that BADHDR, a warning -- an odd header is not a lie about the
-# directory. symbol-audit reads every .cld, sees an unknown species, and
-# BLOCKS it as SYM-HDR. One file, two policies. The agreed fix (scope D)
-# is that symbol-audit leaves index.cld (and CLD_NOT_DIR_INDEX_RE) to
-# index-audit, so the bad header is BADHDR only. Until then this is
-# recorded as KNOWN, not asserted either way; when it reads RESOLVED,
-# move the assertion into the case file that owns the fix.
+# An index.cld whose line 1 is wrong. index-audit calls that BADHDR, a
+# warning -- an odd header is not a lie about the directory. symbol-audit
+# used to read every .cld, see an unknown species, and BLOCK the same file
+# as SYM-HDR: one file, two policies. Now (scope D) symbol-audit leaves
+# every index.cld, and anything CLD_NOT_DIR_INDEX_RE names, to index-audit,
+# so the bad header is BADHDR only. 20-symbol-audit.sh owns the detailed
+# cases; this one runs both checkers on the same file side by side.
 d=$(fixture)
 mkdir -p "$d/lib"
 printf 'NOTANINDEX lib/\n' > "$d/lib/index.cld"
@@ -71,8 +70,9 @@ stage "$d"
 out=$(cd "$d" && $SH $IA lib/index.cld 2>&1); rc=$?
 expect_hit "index-audit: a bad index.cld header is BADHDR" "BADHDR" "$out"
 expect_rc  "index-audit: BADHDR warns (exit 0)" 0 "$rc"
-out=$(cd "$d" && $SH $SA lib/index.cld 2>&1)
-known_issue "symbol-audit also blocks a bad index.cld header as SYM-HDR (scope D)" "SYM-HDR" "$out"
+out=$(cd "$d" && $SH $SA lib/index.cld 2>&1); rc=$?
+expect_miss "symbol-audit leaves a bad index.cld header to index-audit (no SYM-HDR)" "SYM-HDR" "$out"
+expect_rc  "...and does not block on it (exit 0)" 0 "$rc"
 out=$(cd "$d" && $SH $SA lib/odd.cld 2>&1); rc=$?
 expect_hit "control: symbol-audit still blocks an unknown species elsewhere" "SYM-HDR" "$out"
 expect_rc  "control: unknown species blocks (exit 1)" 1 "$rc"

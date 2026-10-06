@@ -1,6 +1,6 @@
 INDEX .claude/skills/
 D index-find/              Find a file or dir through the directory indexes
-D index-audit-partial/     Run the directory-index gate over the staged diff on demand
+D index-audit-partial/     Run the whole pre-commit gate (both checkers) over the staged diff on demand
 D symbol-find-js/          Find which JavaScript file defines a symbol
 D symbol-find-py/          Find which Python file defines a symbol
 D symbol-find-bash/        Find which bash file defines a symbol
