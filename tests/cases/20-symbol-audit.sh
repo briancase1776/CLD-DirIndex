@@ -669,7 +669,135 @@ out=$(cd "$d" && $SH $LK rdeps os 2>&1)
 expect_hit  "rdeps: os is not os.path" "NONE os" "$out"
 rm -rf "$d"
 
+# --- rdeps asks the way each language writes a dependency ---
+d=$(fixture)
+mkdir -p "$d/pkg/sub" "$d/web/lib" "$d/lib" "$d/other" "$d/bin"
+printf 'def helper(): pass\n' > "$d/pkg/util.py"
+printf '' > "$d/pkg/__init__.py"
+printf 'from pkg.util import helper\nimport pkg\n' > "$d/main.py"
+printf 'FILE main.py\nI pkg.util   helper\nI pkg        the package\n' > "$d/main.py.cld"
+printf 'from .util import helper\n' > "$d/pkg/m.py"
+printf 'FILE pkg/m.py\nI .util   helper, relative\n' > "$d/pkg/m.py.cld"
+printf 'from ..util import helper\n' > "$d/pkg/sub/deep.py"
+printf 'FILE pkg/sub/deep.py\nI ..util   helper, two dots up\n' > "$d/pkg/sub/deep.py.cld"
+printf 'export const x = 1\n' > "$d/web/util.js"
+printf "import { x } from './util'\nimport lib from './lib'\n" > "$d/web/app.js"
+printf 'FILE web/app.js\nI ./util   x, no extension\nI ./lib    the lib directory\n' > "$d/web/app.js.cld"
+printf 'export default 1\n' > "$d/web/lib/index.js"
+printf 'x\n' > "$d/lib/util.js"
+printf "import a from './util.js'\n" > "$d/lib/app.js"
+printf 'FILE lib/app.js\nI ./util.js   a\n' > "$d/lib/app.js.cld"
+printf 'x\n' > "$d/other/util.js"
+printf "import a from './util.js'\n" > "$d/other/x.js"
+printf 'FILE other/x.js\nI ./util.js   a, but the one in other/\n' > "$d/other/x.js.cld"
+printf "#!/usr/bin/env node\nrequire('../lib/util.js')\n" > "$d/bin/tool"
+printf 'FILE bin/tool\nI ../lib/util.js   a, from an extensionless node script\n' > "$d/bin/tool.cld"
+stage "$d"
+out=$(cd "$d" && $SH $LK rdeps pkg/util.py 2>&1); rc=$?
+expect_hit  "rdeps: a py file answers for its dotted module" "main.py  I pkg.util  --  helper" "$out"
+expect_hit  "rdeps: ...and for a relative import from its package" "pkg/m.py  I .util" "$out"
+expect_hit  "rdeps: ...and for one two dots up" "pkg/sub/deep.py  I ..util" "$out"
+expect_miss "rdeps: a package is not its module" "I pkg  " "$out"
+expect_rc   "rdeps: a py module with dependents exits 0" 0 "$rc"
+out=$(cd "$d" && $SH $LK rdeps pkg/__init__.py 2>&1)
+expect_hit  "rdeps: pkg/__init__.py answers for pkg" "main.py  I pkg  --  the package" "$out"
+out=$(cd "$d" && $SH $LK rdeps web/util.js 2>&1); rc=$?
+expect_hit  "rdeps: a js file answers for an import without its extension" "web/app.js  I ./util  --  x, no extension" "$out"
+expect_miss "rdeps: ...and not for another directory's util.js" "lib/app.js" "$out"
+expect_rc   "rdeps: a js file with dependents exits 0" 0 "$rc"
+out=$(cd "$d" && $SH $LK rdeps web/lib/index.js 2>&1)
+expect_hit  "rdeps: an index.js answers for its directory" "web/app.js  I ./lib  --  the lib directory" "$out"
+out=$(cd "$d" && $SH $LK rdeps lib/util.js 2>&1)
+expect_hit  "rdeps: a ./ token is resolved against the importing file" "lib/app.js  I ./util.js" "$out"
+expect_miss "rdeps: ...so other/'s ./util.js is not lib/util.js" "other/x.js" "$out"
+expect_hit  "rdeps: an extensionless node script's ../ token resolves too" "bin/tool  I ../lib/util.js" "$out"
+out=$(cd "$d" && $SH $LK rdeps other/util.js 2>&1)
+expect_hit  "control: other/util.js has its own importer" "other/x.js  I ./util.js" "$out"
+expect_miss "control: ...and not lib/'s" "lib/app.js" "$out"
+out=$(cd "$d" && $SH $LK rdeps zzz/util.js 2>&1); rc=$?
+expect_hit  "rdeps: a path nothing imports is NONE, not every ./util.js" "NONE zzz/util.js" "$out"
+expect_hit  "rdeps: ...and NONE says how much of the repo records deps" "(7 of 7 symbol indexes record an I entry)" "$out"
+expect_rc   "rdeps: NONE exits 1" 1 "$rc"
+out=$(cd "$d" && $SH $LK rdeps pkg.util 2>&1)
+expect_hit  "control: the token as written still answers" "main.py  I pkg.util" "$out"
+rm -rf "$d"
+
+# --- no I entries anywhere: say so, not a confident NONE ---
+d=$(fixture)
+mkdir -p "$d/lib" "$d/app" "$d/vendor/x"
+printf 'u() { :; }\n' > "$d/lib/util.sh"
+printf 'FILE lib/util.sh\nF u   helper\n' > "$d/lib/util.sh.cld"
+printf '. "$(dirname "$0")/../lib/util.sh"\nmain() { :; }\n' > "$d/app/run.sh"
+printf 'FILE app/run.sh\nF main   entry\n' > "$d/app/run.sh.cld"
+printf 'x\n' > "$d/vendor/x/v.js"
+printf 'FILE vendor/x/v.js\nI ./a   a\n' > "$d/vendor/x/v.js.cld"
+stage "$d"
+out=$(cd "$d" && $SH $LK rdeps lib/util.sh 2>&1); rc=$?
+expect_hit  "rdeps with no I entry anywhere: UNKNOWN, not NONE" "UNKNOWN lib/util.sh: no symbol index here records an I entry (0 of 2" "$out"
+expect_miss "rdeps with no I entry anywhere: no bare NONE" "NONE" "$out"
+expect_rc   "rdeps UNKNOWN exits 1" 1 "$rc"
+out=$(cd "$d" && $SH $LK deps app/run.sh 2>&1); rc=$?
+expect_hit  "deps with no I entry anywhere: UNKNOWN" "UNKNOWN app/run.sh: app/run.sh.cld lists no I entries" "$out"
+expect_rc   "deps UNKNOWN exits 1" 1 "$rc"
+out=$(cd "$d" && $SH $LK deps vendor/x/v.js 2>&1); rc=$?
+expect_hit  "deps: an exempt index is called exempt, not missing" "vendor/x/v.js.cld is exempt" "$out"
+expect_rc   "deps: an exempt index exits 1" 1 "$rc"
+printf 'I ../lib/util.sh   u\n' >> "$d/app/run.sh.cld"
+stage "$d"
+out=$(cd "$d" && $SH $LK deps lib/util.sh 2>&1); rc=$?
+expect_hit  "deps: once some index records deps, NONE with the coverage" "NONE lib/util.sh: lib/util.sh.cld lists no I entries (1 of 2 symbol indexes record an I entry)" "$out"
+expect_rc   "deps: NONE exits 1, like every nothing-listed answer" 1 "$rc"
+out=$(cd "$d" && $SH $LK rdeps lib/util.sh 2>&1); rc=$?
+expect_hit  "control: rdeps finds the dependent now" "app/run.sh  I ../lib/util.sh  --  u" "$out"
+expect_rc   "control: rdeps exits 0" 0 "$rc"
+rm -rf "$d"
+
+# --- --lang costs one pass, not one process per hit ---
+# A stand-in awk and file(1) that count their calls, then run the real
+# ones: deciding the language of 30 matching indexes must not start 30
+# processes of either.
+d=$(fixture)
+mkdir -p "$d/p" "$d/e"
+i=0
+while [ "$i" -lt 30 ]; do
+  printf 'def run(): pass\n' > "$d/p/f$i.py"
+  printf 'FILE p/f%s.py\nF run   r\n' "$i" > "$d/p/f$i.py.cld"
+  printf 'init() { :; }\n' > "$d/e/t$i"
+  printf 'FILE e/t%s\nF init   i\n' "$i" > "$d/e/t$i.cld"
+  i=$((i + 1))
+done
+stage "$d"
+cb=$(mktemp -d "$CLD_TEST_ROOT/bin.XXXXXX")
+real_awk=$(command -v awk)
+printf '#!/bin/sh\necho awk >> "%s"\nexec "%s" "$@"\n' "$cb/calls" "$real_awk" > "$cb/awk"
+printf '#!/bin/sh\necho file >> "%s"\nfor a in "$@"; do echo "POSIX shell script, ASCII text executable"; done\n' "$cb/calls" > "$cb/file"
+chmod +x "$cb/awk" "$cb/file"
+: > "$cb/calls"
+out=$(cd "$d" && PATH="$cb:$PATH" $SH $LK find run --lang py 2>&1)
+expect_eq   "find --lang py: every py hit" "30" "$(printf '%s\n' "$out" | grep -c ' in  p/')"
+n=$(grep -c '^awk$' "$cb/calls")
+if [ "$n" -le 6 ]; then ok "find --lang over 30 hits: a few awk calls, not one per hit ($n)"
+else bad "find --lang over 30 hits: a few awk calls, not one per hit" "$n awk calls"; fi
+: > "$cb/calls"
+out=$(cd "$d" && PATH="$cb:$PATH" $SH $LK find init --lang sh 2>&1)
+expect_eq   "find --lang sh: file(1) places every extensionless target" "30" "$(printf '%s\n' "$out" | grep -c ' in  e/t')"
+n=$(grep -c '^file$' "$cb/calls")
+if [ "$n" -le 1 ]; then ok "find --lang over 30 undecided targets: one file(1) call ($n)"
+else bad "find --lang over 30 undecided targets: one file(1) call" "$n file calls"; fi
+rm -rf "$d" "$cb"
+
 section "the symbol-* skills"
+
+# fill <line> <placeholder> <value> -- the command line with its first
+# <placeholder> replaced by <value>, verbatim: what Claude Code does with
+# $ARGUMENTS, and what an agent does with FILE and TARGET. The shell then
+# sees exactly what the skill's quoting gives it.
+fill() {
+  F_LINE=$1 F_PH=$2 F_VAL=$3 awk 'BEGIN {
+    l = ENVIRON["F_LINE"]; ph = ENVIRON["F_PH"]; i = index(l, ph)
+    if (i) l = substr(l, 1, i - 1) ENVIRON["F_VAL"] substr(l, i + length(ph))
+    sub(/^[ \t]+/, "", l); print l }'
+}
 
 SK="$TOOLKIT/.claude/skills"
 for gone in filename-find filename-dupecheck; do
@@ -688,6 +816,11 @@ for l in js py sh bash; do
 done
 printf '. ./p.sh\n' >> "$d/lib/p.bash"
 printf 'I ./p.sh   ping\n' >> "$d/lib/p.bash.cld"
+# js names may hold a $; a path may too
+printf 'const $el = 1\n$scope.watch = 2\n' > "$d/lib/w.js"
+printf 'FILE lib/w.js\nK $el            jQuery-style element\nF $scope.watch   Angular watcher\n' > "$d/lib/w.js.cld"
+printf '. ./p.sh\n' > "$d/lib/a\$b.sh"
+printf 'FILE lib/a$b.sh\nI ./p.sh   ping, from a path holding a $\n' > "$d/lib/a\$b.sh.cld"
 stage "$d"
 for s in symbol-find-js symbol-find-py symbol-find-sh symbol-find-bash \
          symbol-dupecheck-js symbol-dupecheck-py symbol-dupecheck-sh symbol-dupecheck-bash \
@@ -700,27 +833,43 @@ for s in symbol-find-js symbol-find-py symbol-find-sh symbol-find-bash \
   case "$s" in
     symbol-deps)
       line=$(grep -e 'lookup\.sh"* deps' "$f" | head -n 1)
-      out=$(cd "$d" && eval "$(echo "$line" | sed 's/^ *//; s,"FILE",lib/p.bash,')" 2>&1)
+      out=$(cd "$d" && eval "$(fill "$line" FILE lib/p.bash)" 2>&1)
       expect_hit "skill $s: its deps command runs" "I ./p.sh  --  ping" "$out"
       # FILE is relative to where you stand, and the command works there
-      out=$(cd "$d/lib" && eval "$(echo "$line" | sed 's/^ *//; s,"FILE",p.bash,')" 2>&1)
+      out=$(cd "$d/lib" && eval "$(fill "$line" FILE p.bash)" 2>&1)
       expect_hit "skill $s: its deps command runs from a subdirectory" "I ./p.sh  --  ping" "$out"
+      out=$(cd "$d" && eval "$(fill "$line" FILE 'lib/a$b.sh')" 2>&1)
+      expect_hit "skill $s: a \$ in FILE reaches the script unexpanded" "I ./p.sh  --  ping, from a path holding a \$" "$out"
       line=$(grep -e 'lookup\.sh"* rdeps' "$f" | head -n 1)
-      out=$(cd "$d" && eval "$(echo "$line" | sed 's/^ *//; s,"TARGET",lib/p.sh,')" 2>&1)
-      expect_hit "skill $s: its rdeps command runs" "lib/p.bash  I ./p.sh" "$out" ;;
+      out=$(cd "$d" && eval "$(fill "$line" TARGET lib/p.sh)" 2>&1)
+      expect_hit "skill $s: its rdeps command runs" "lib/p.bash  I ./p.sh" "$out"
+      expect_hit "skill $s: ...and names the dependent whose path holds a \$" "lib/a\$b.sh  I ./p.sh" "$out" ;;
     *)
       l=${s##*-}
       line=$(grep 'lookup.sh' "$f" | head -n 1)
       expect_hit "skill $s: calls the shared script for $l" "--lang $l" "$line"
-      out=$(cd "$d" && ARGUMENTS=ping && eval "$line" 2>&1)
+      out=$(cd "$d" && eval "$(fill "$line" '$ARGUMENTS' ping)" 2>&1)
       case "$s" in
         symbol-find-*)      expect_hit "skill $s: finds the $l definition only" "F ping  in  lib/p.$l  --  Pings, in $l" "$out" ;;
         symbol-dupecheck-*) expect_hit "skill $s: TAKEN in $l" "TAKEN ping (among $l indexes)" "$out" ;;
       esac
-      sub=$(cd "$d/lib" && ARGUMENTS=ping && eval "$line" 2>&1)
+      sub=$(cd "$d/lib" && eval "$(fill "$line" '$ARGUMENTS' ping)" 2>&1)
       expect_hit "skill $s: its command works from a subdirectory too" "ping  in  lib/p.$l  --" "$sub"
       n=$(printf '%s\n' "$out" | grep -c ' in  lib/p\.')
-      expect_eq "skill $s: and no other language" "1" "$n" ;;
+      expect_eq "skill $s: and no other language" "1" "$n"
+      # a name holding a $ reaches the script exactly as given
+      case "$s" in
+        symbol-find-js)
+          out=$(cd "$d" && eval "$(fill "$line" '$ARGUMENTS' '$el')" 2>&1)
+          expect_hit "skill $s: a name starting with \$ is looked up as given" "K \$el  in  lib/w.js" "$out" ;;
+        symbol-dupecheck-js)
+          out=$(cd "$d" && eval "$(fill "$line" '$ARGUMENTS' '$scope.watch')" 2>&1)
+          expect_hit "skill $s: a name holding a \$ is TAKEN, not FREE" "TAKEN \$scope.watch (among js indexes)" "$out"
+          expect_hit "skill $s: ...and shows where" "F \$scope.watch  in  lib/w.js" "$out" ;;
+        *)
+          out=$(cd "$d" && eval "$(fill "$line" '$ARGUMENTS' '$HOME')" 2>&1)
+          expect_hit "skill $s: a \$ in the name is never expanded" "\$HOME (among $l indexes)" "$out" ;;
+      esac ;;
   esac
 done
 rm -rf "$d"

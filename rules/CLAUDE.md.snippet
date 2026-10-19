@@ -33,7 +33,10 @@ entries, what it depends on. Format and rules:
   bash) before grepping source. Before naming a new symbol, use
   `symbol-dupecheck-<lang>`.
 - Before changing what a file exports, use `symbol-deps rdeps <file>`
-  to see what depends on it.
+  to see what depends on it (ask with the file's path: py modules and
+  js imports written without the extension are found). `UNKNOWN` means
+  this repo's indexes record no dependencies at all: grep the imports
+  instead.
 - Keep `<file>.cld` current in the same commit: add, remove or rename
   its entries with the symbols and dependencies, and rename or remove
   the index with its source.

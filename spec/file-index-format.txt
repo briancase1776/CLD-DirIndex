@@ -82,7 +82,9 @@ LANGUAGES
        source" and a tiny file "ASCII text";
     5. otherwise unknown.
   The language decides the js-only accessor rule (below), which
-  declarations SYM-MISS looks for, and what the lookups' --lang keeps.
+  declarations SYM-MISS looks for in py, sh and bash (js SYM-MISS goes
+  by CLD_SYM_MISS_EXTS and CLD_DECL_RE), what the lookups' --lang keeps,
+  and how rdeps reads an importing file's I tokens.
 
 RULES
   - The letter comes from HOW THE SYMBOL IS DECLARED IN SOURCE, never
@@ -195,9 +197,19 @@ LOOKUPS
                                NAME, or ends in ".NAME")
     dupecheck NAME [--lang L]  FREE, or TAKEN plus every definition
     deps FILE                  FILE's I entries
-    rdeps TARGET               every I entry naming TARGET, as written
-                               or as a path suffix once leading ./ ../ /
-                               and $VAR parts are dropped
+    rdeps TARGET               every I entry naming TARGET: as written,
+                               or as the importing file's language
+                               writes it -- js: a ./ or ../ token
+                               resolved against the importing file,
+                               extension optional (./util is util.js);
+                               py: the dotted module (pkg.util is
+                               pkg/util.py), relative imports resolved;
+                               sh, bash and the rest: the path compared
+                               lexically once leading ./ ../ / and $VAR
+                               parts are dropped, which can over-report
+  deps and rdeps answer NONE when nothing is listed, with how many
+  indexes record any I entry, and UNKNOWN when no index does: an empty
+  dependency map says nothing about what depends on a file.
   The symbol-find-*, symbol-dupecheck-* and symbol-deps skills call it.
 
 EXAMPLE (illustrative file; note the qualified names, D, G, R and I)

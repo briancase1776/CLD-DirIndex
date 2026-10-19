@@ -140,8 +140,11 @@ in each language.
 The language of a target is decided by, in order: a `lang <name>` line
 in the index's header block; the target's `#!` line; its extension,
 through `CLD_LANG_EXT_MAP`; `file -b`, if file(1) is installed. The
-language decides the js-only accessor rule, what `SYM-MISS` counts as a
-declaration, and what the lookups' `--lang` keeps.
+language decides the js-only accessor rule, what the lookups' `--lang`
+keeps, how `rdeps` reads an importing file's `I` tokens, and what
+`SYM-MISS` counts as a declaration in py, sh and bash (js `SYM-MISS` goes
+by `CLD_SYM_MISS_EXTS` and `CLD_DECL_RE`, so a js file recognised only by
+its `#!` or `lang` line is not checked).
 
 ```sh
 scripts/symbol-lookup/lookup.sh find load --lang js   # <T> <name>  in  <file>  --  <description>
@@ -151,12 +154,24 @@ scripts/symbol-lookup/lookup.sh rdeps lib/common.sh   # <file>  I <token>  --  <
 ```
 
 Field 2 is matched as a fixed string, never as a pattern built from the
-name. `rdeps` matches a token as written, or as a path suffix once
-leading `./`, `../`, `/` and `$VAR` parts are dropped, so
-`I $HERE/../lib/common.sh` answers for `lib/common.sh`. Exit codes:
-`find` 0 found, 1 `NOTFOUND`; `dupecheck` 0 `FREE`, 1 `TAKEN`; `deps` 0
-listed or `NONE`, 1 `NOINDEX`; `rdeps` 0 listed, 1 `NONE`; 2 is a usage
-or setup error. The skills are thin wrappers around these commands.
+name. `rdeps` takes a file's path and finds the `I` entries that name it
+the way the importing file's language writes it: in js a `./` or `../`
+token is resolved against the importing file and may leave out the
+extension (`./util` is `util.js`, `./lib` an `index.js`'s directory); in
+py the dotted module (`pkg.util` is `pkg/util.py`, `pkg` is
+`pkg/__init__.py`), relative imports included; in sh and bash the path,
+compared lexically once leading `./`, `../`, `/` and `$VAR` parts are
+dropped, so `I $HERE/../lib/common.sh` answers for `lib/common.sh` (a
+sh `.` path is relative to wherever the script runs, which no index
+records, so a short token can answer for a file it does not mean). A
+token exactly as typed always matches. When nothing matches, `NONE` says
+how many indexes record any `I` entry, and `UNKNOWN` replaces it when
+none does: an empty dependency map is not evidence that nothing depends
+on a file. Exit codes: `find` 0 found, 1 `NOTFOUND`; `dupecheck` 0
+`FREE`, 1 `TAKEN`; `deps` and `rdeps` 0 listed, 1 `NOINDEX`, `NONE` or
+`UNKNOWN`; 2 is a usage or setup error. The skills are thin wrappers
+around these commands, and pass every name and path in single quotes so
+the shell never expands a `$` in it.
 
 ## The commit gate
 
