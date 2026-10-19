@@ -233,3 +233,80 @@ cld_lang_of() {
   fi
   return 0
 }
+
+# cld_langs_of <in> <out> -- steps 2-4 for many targets at once, for a
+# caller that has no index header to read (or has read it already): <in>
+# holds one target path per line, and <out> gets "target US lang" for
+# each, the lang empty when nothing can tell. Every #! line is read by one
+# awk, and file(1) runs once per hundred targets that steps 2 and 3 leave
+# undecided -- never a process per target. Only a target the shell has
+# found to be a readable regular file is opened (an awk can die reading a
+# directory); for any other, only its extension counts. Uses fds 7 and 8.
+cld_langs_of() {
+  _cls_in=$1
+  _cls_out=$2
+  : > "$_cls_out.rd" || cld_die "cannot write $_cls_out.rd"
+  while IFS= read -r _cls_t <&7; do
+    if [ -f "$_cls_t" ] && [ -r "$_cls_t" ]; then
+      printf '%s\n' "$_cls_t" >> "$_cls_out.rd" || cld_die "cannot write $_cls_out.rd"
+    fi
+  done 7< "$_cls_in"
+  CLD_SYM_RD="$_cls_out.rd" CLD_LANG_EXT_MAP=$CLD_LANG_EXT_MAP \
+  awk -v US="$CLD_SYM_US" "$CLD_SYM_LANG_AWK"'
+    BEGIN {
+      rf = ENVIRON["CLD_SYM_RD"]
+      while ((getline x < rf) > 0) rd[x] = 1
+      close(rf)
+    }
+    {
+      t = $0; g = ""
+      if (t in rd) {
+        l = ""
+        if ((getline l < cls_dot(t)) > 0) g = cls_bang(l)
+        close(cls_dot(t))
+      }
+      if (g == "") g = cls_ext(t)
+      if (g == "" && (t in rd)) g = "?"
+      print t US g
+    }' "$_cls_in" </dev/null > "$_cls_out.l" ||
+    cld_die "awk failed reading the targets' #! lines"
+  # file(1), the last resort, for the targets marked "?"
+  : > "$_cls_out.f" || cld_die "cannot write $_cls_out.f"
+  if command -v file >/dev/null 2>&1; then
+    set --
+    while IFS="$CLD_SYM_US" read -r _cls_t _cls_g <&7; do
+      [ "$_cls_g" = "?" ] || continue
+      case $_cls_t in /*) : ;; *) _cls_t=./$_cls_t ;; esac
+      set -- "$@" "$_cls_t"
+      if [ "$#" -ge 100 ]; then _cls_file "$_cls_out.f" "$@"; set --; fi
+    done 7< "$_cls_out.l"
+    [ "$#" -eq 0 ] || _cls_file "$_cls_out.f" "$@"
+  fi
+  CLD_SYM_F="$_cls_out.f" awk -F "$CLD_SYM_US" -v OFS="$CLD_SYM_US" '
+    BEGIN {
+      ff = ENVIRON["CLD_SYM_F"]
+      while ((getline x < ff) > 0) { split(x, a, FS); f[a[1]] = a[2] }
+      close(ff)
+    }
+    $2 == "?" { $2 = ($1 in f) ? f[$1] : "" }
+    { print }' "$_cls_out.l" </dev/null > "$_cls_out" ||
+    cld_die "awk failed joining the languages"
+}
+
+# _cls_file <out> <./target...> -- one file -b call, "target US lang" per
+# target appended to <out>. file(1) prints one line per argument, in order.
+_cls_file() {
+  _cls_o=$1
+  shift
+  file -b "$@" > "$_cls_o.out" 2>/dev/null
+  exec 8< "$_cls_o.out"
+  for _cls_a in "$@"; do
+    _cls_d=
+    IFS= read -r _cls_d <&8 || _cls_d=
+    cld_lang_desc "$_cls_d"
+    case $_cls_a in ./*) _cls_a=${_cls_a#./} ;; esac
+    printf '%s%s%s\n' "$_cls_a" "$CLD_SYM_US" "$CLD_SYM_LANG" >> "$_cls_o" ||
+      cld_die "cannot write $_cls_o"
+  done
+  exec 8<&-
+}

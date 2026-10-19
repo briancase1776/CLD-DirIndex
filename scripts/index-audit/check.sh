@@ -17,11 +17,16 @@
 # directory) for a health sweep. A directory argument may be spelled
 # lib, lib/, ./lib or an absolute path; "." is the whole repo. Every
 # path is relative to where you stand; the repo checked is the one you
-# stand in.
+# stand in. Outside any git repository it checks the plain directory you
+# stand in, listing its files with find(1).
 #
 # Exit code: 1 if any BLOCK-level finding; 2 if the check could not run
-# (a setup error: no repo, a failed file listing); else 0. Warnings print
-# but never set the exit code. Anything but 0 blocks a commit.
+# (a setup error: a git directory with no work tree, a failed file
+# listing, a finding that could not be recorded), or if an argument named
+# nothing to check (a path that is not there, a directory with no tracked
+# file under it) -- a check that looked at nothing never says "clean";
+# else 0. Warnings print but never set the exit code. Anything but 0
+# blocks a commit.
 #
 # Findings (mechanical, no LLM):
 #   ORPHAN    [BLOCK] an index.cld entry names something that is not there
@@ -54,28 +59,38 @@
 # If line 1 is not a header it may itself be an entry, so it is parsed
 # as one. An index.cld in another format altogether is what
 # CLD_NOT_DIR_INDEX_RE is for; such a file is not a directory index at
-# all, so its directory counts as having none (no ORPHAN, no NOENTRY).
+# all, so its directory counts as having none: no ORPHAN, no NOENTRY,
+# and -- since the name index.cld is already taken there -- no NOINDEX.
 #
 # A dir with NO index.cld is silently allowed when FILES are checked
-# (the gate): leaf dirs are often indexed by their PARENT, and the gate
-# must judge only what the commit touched. A sweep -- no argument, or a
-# directory argument -- is the deliberate pass that owns the call "this
-# dir needs an index.cld" (NOINDEX) and "this subdirectory is missing
-# from its parent's index" (NODENTRY), and says so as warnings.
+# (the gate): the gate judges only what the commit touched, and whether
+# a directory needs an index at all is not a question a commit raises. A
+# sweep -- no argument, or a directory argument -- is the deliberate pass
+# that owns the call "this dir needs an index.cld" (NOINDEX) and "this
+# subdirectory is missing from its parent's index" (NODENTRY), and says
+# so as warnings.
 #
 # --gone keeps a deletion narrow. For each gone path, the ONLY entries
 # reported are those in its parent's index.cld that still name it (and,
 # when the deletion emptied a directory away, those that still name the
-# vanished directory, one level up at a time). A deletion never re-audits
-# a whole index, so an honest commit is never blocked for someone else's
-# old orphan elsewhere in the same file.
+# vanished directory, one level up at a time). The deletion itself never
+# re-audits a whole index. But an honest deletion of a LISTED file also
+# edits that index to drop the entry, and an index the commit stages is
+# checked in full -- so an old orphan in that same index has to be fixed
+# in that commit. What --gone spares is the indexes a commit does not
+# edit: deleting a file no index lists (a .cld, an unlisted asset) is
+# never blocked for someone else's old orphan.
+#
+# Cost: one shell pass per index that is read, and one awk per batch of
+# lookups, never a process per path -- a commit of thousands of paths
+# costs about what reading their indexes costs.
 
 set -u
 
 # The repo checked is the one the CALLER stands in (found from the
 # current directory by cld-lib.sh), never the one this script lives in.
 # cld_init leaves us at the repo root, and every path below is
-# root-relative; arguments are translated with cld_arg.
+# root-relative; arguments are translated with cld_arg_v.
 CLD_HERE=$(CDPATH= cd "$(dirname "$0")" && pwd) || exit 2
 . "$CLD_HERE/../cld-lib.sh"
 cld_init
@@ -83,27 +98,47 @@ cld_init
 
 WORK=$(mktemp -d) || cld_die "mktemp failed"
 OUT=$WORK/out        # every finding, one line each, possibly repeated
-BLOCK=$WORK/block    # non-empty once any finding blocks
 LIST=$WORK/list      # the tracked files a sweep covers
-: > "$OUT"
-: > "$BLOCK"
 trap 'rm -rf "$WORK"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+: > "$OUT" || cld_die "cannot write in the temp directory $WORK"
 
 CR=$(printf '\r')
 TAB=$(printf '\t')
+US=$(printf '\037')  # field separator in the work files: no path holds it
+
+# The blocking state is a shell variable, never a file: a finding that
+# blocks must not be lost because the temp space ran out. Every loop
+# below runs in THIS shell (its list on fd 3, never at the end of a pipe),
+# so a block() anywhere is seen here.
+blocked=0
+unchecked=0
 
 note() {
   # note <RULE> <file> <line-or--> <message>
-  printf '%-7s  %s:%s  %s\n' "$1" "$2" "$3" "$4" >> "$OUT"
+  printf '%-7s  %s:%s  %s\n' "$1" "$2" "$3" "$4" >> "$OUT" ||
+    cld_die "cannot record a finding in $OUT (out of temp space?) -- nothing was checked reliably"
 }
 
 block() {
   # block <RULE> <file> <line-or--> <message>  -- a finding that exits 1
   note "$@"
-  printf 'x' >> "$BLOCK"
+  blocked=1
+}
+
+# not_checked <message> -- an argument that named nothing to check. Said
+# at once, and the run exits 2 instead of ever reporting clean.
+not_checked() {
+  echo "index-audit: $1 -- nothing was checked there"
+  unchecked=1
+}
+
+# put <file> <line> -- append one line to a work file, or stop: a list
+# that silently lost lines would check less than it says.
+put() {
+  printf '%s\n' "$2" >> "$1" || cld_die "cannot write $1 (out of temp space?)"
 }
 
 # split_path <path> -- sets SP_DIR (its directory, "." at the root),
@@ -120,8 +155,11 @@ split_path() {
   SP_BASE=${1##*/}
 }
 
-skipped() {
-  printf '%s' "$1" | grep -q "$CLD_SKIP_RE"
+# unskipped <in> <out> -- the lines of <in> that CLD_SKIP_RE does not
+# name, in one grep. A pattern grep rejects skips nothing (grep says why).
+unskipped() {
+  grep -v -e "$CLD_SKIP_RE" "$1" > "$2"
+  [ "$?" -le 1 ] || cp "$1" "$2" || cld_die "cannot copy $1"
 }
 
 # Every type letter the format defines -- find(1)'s -type codes,
@@ -190,35 +228,70 @@ is_indexable() {
 # is_dir_index <path> -- is this a directory index we should read? It
 # must be a file, and not one CLD_NOT_DIR_INDEX_RE says is another format
 # that only shares the name. Every check asks this one question, so an
-# exempted file is exempt from all of them.
+# exempted file is exempt from all of them. The last answer is kept: the
+# files of one directory arrive together and share one index.
+IDI_LAST=
+IDI_RC=1
 is_dir_index() {
+  if [ -n "$IDI_LAST" ] && [ "$1" = "$IDI_LAST" ]; then return "$IDI_RC"; fi
+  IDI_LAST=$1
+  IDI_RC=1
   [ -f "$1" ] || return 1
   if [ -n "$CLD_NOT_DIR_INDEX_RE" ]; then
-    printf '%s' "$1" | grep -q "$CLD_NOT_DIR_INDEX_RE" && return 1
+    printf '%s\n' "$1" | grep -q -e "$CLD_NOT_DIR_INDEX_RE" && return 1
   fi
+  IDI_RC=0
   return 0
 }
 
-# has_entry <index> <name> -- does any entry's NAME field equal name?
-# The name starts right after "T " and ends at a space, a directory
-# slash, or the line end; name may itself contain single spaces, so
-# compare by prefix plus the boundary character (avoids the
-# alignment-column ambiguity). A trailing CR is ignored. The name goes
-# in through the environment, not awk -v, which would read a backslash
-# in it as an escape sequence.
-has_entry() {
-  HE_NAME=$2 HE_TYPES=$TYPE_LETTERS awk '
-    BEGIN { n = ENVIRON["HE_NAME"]; types = ENVIRON["HE_TYPES"] }
-    { sub(/\r$/, "") }
-    length($1) == 1 && index(types, $1) > 0 {
-      rest = substr($0, 3)
-      if (index(rest, n) == 1) {
-        after = substr(rest, length(n) + 1, 1)
-        if (after == "" || after == " " || after == "/") { found = 1; exit }
+# missing_entries <in> <out> -- <in> holds "index US name US key" lines;
+# <out> gets the key of every line whose name has no entry in its index.
+# An entry's NAME starts right after "T " and ends at a space, a
+# directory slash, or the line end; a name may itself contain single
+# spaces, so it is compared by prefix plus that boundary character
+# (avoids the alignment-column ambiguity). A trailing CR is ignored. One
+# awk for every lookup, each index read once; names reach awk as data,
+# never through -v (which would read a backslash as an escape) or as an
+# operand (where "year=2024/index.cld" would be a variable assignment).
+missing_entries() {
+  # sorted, so the lookups in one index arrive together
+  LC_ALL=C sort "$1" > "$1.s" || cld_die "cannot sort $1 (out of temp space?)"
+  HE_TYPES=$TYPE_LETTERS awk -F "$US" '
+    function load(idx,   q, l, f, rest, tok, j) {
+      split("", ent); split("", bucket); ne = 0
+      q = (idx ~ /^\//) ? idx : "./" idx
+      while ((getline l < q) > 0) {
+        sub(/\r$/, "", l)
+        split(l, f, " ")
+        if (length(f[1]) != 1 || index(types, f[1]) == 0) continue
+        rest = substr(l, 3)
+        ent[++ne] = rest
+        # bucket the entries by their first word (up to a space or a /):
+        # a name can only match an entry that starts with its own
+        tok = rest
+        j = match(tok, /[ \/]/); if (j) tok = substr(tok, 1, j - 1)
+        bucket[tok] = bucket[tok] SUBSEP ne
       }
+      close(q)
+      loaded = idx
     }
-    END { exit !found }
-  ' "$1"
+    function has(n,   tok, j, c, k, i, after) {
+      tok = n
+      j = match(tok, /[ \/]/); if (j) tok = substr(tok, 1, j - 1)
+      if (!(tok in bucket)) return 0
+      c = split(substr(bucket[tok], 2), k, SUBSEP)
+      for (i = 1; i <= c; i++) {
+        if (index(ent[k[i]], n) != 1) continue
+        after = substr(ent[k[i]], length(n) + 1, 1)
+        if (after == "" || after == " " || after == "/") return 1
+      }
+      return 0
+    }
+    BEGIN { types = ENVIRON["HE_TYPES"]; loaded = "" }
+    {
+      if (NR == 1 || $1 != loaded) load($1)
+      if (!has($2)) print $3
+    }' "$1.s" > "$2" || cld_die "awk failed looking up index entries"
 }
 
 # parse_entry <line> -- is this line an entry? Sets PE_LETTER (the type
@@ -239,7 +312,7 @@ parse_entry() {
   return 0
 }
 
-# resolve_entry <dir> <chunk> [name] -- which thing does the entry name?
+# resolve_entry <dir> <chunk> -- which thing does the entry name?
 # The entry name is a real file/dir path, so resolve it BY EXISTENCE
 # rather than by guessing where the description starts. Names may hold
 # single spaces ("Tree Palette.html"), the longest-name entry has only
@@ -249,16 +322,13 @@ parse_entry() {
 # that names something that exists. Only if NO prefix exists is the
 # entry an orphan. This cannot false-positive: the true name is always
 # one of the prefixes tested, so a real file is always found.
-# Sets RE_FOUND (the prefix that exists, or empty) and RE_NAMED (1 when
-# an unresolved prefix tested equals name, with any trailing / dropped).
+# Sets RE_FOUND (the prefix that exists, or empty).
 resolve_entry() {
   re_d=$1
   re_cand=$2
   RE_FOUND=
-  RE_NAMED=0
   while [ -n "$re_cand" ]; do
     if entry_exists "$re_d/${re_cand%/}"; then RE_FOUND=$re_cand; return 0; fi
-    [ "${re_cand%/}" = "${3-}" ] && RE_NAMED=1
     case "$re_cand" in
       *" "*) re_cand=${re_cand% *} ;;
       *)     re_cand= ;;
@@ -333,14 +403,18 @@ audit_index_file() {
     note CRLF "$ai_idx" "$ai_cr" "CRLF line endings; checked with the CRs stripped -- save it with LF endings"
 }
 
-# orphans_naming <index> <name> -- the --gone check: ORPHAN for the
-# entries in this index that name <name> and no longer resolve, and for
-# nothing else in the file. Same message as audit_index_file, so an
-# orphan found both ways prints once.
+# orphans_naming <index> <names> -- the --gone check: ORPHAN for the
+# entries in this index that name one of the names in the file <names>
+# (one per line) and no longer resolve, and for nothing else in the
+# index. One pass over the index however many of its names went away:
+# every prefix an unresolved entry was tried as is joined with <names>.
+# Same message as audit_index_file, so an orphan found both ways prints
+# once.
 orphans_naming() {
   on_idx=$1
   split_path "$on_idx"
   on_d=$SP_DIR
+  : > "$WORK/cand" || cld_die "cannot write in $WORK"
   on_ln=0
   while IFS= read -r on_line || [ -n "$on_line" ]; do
     on_ln=$((on_ln + 1))
@@ -349,60 +423,88 @@ orphans_naming() {
       case "$on_line" in "INDEX "*) continue ;; esac
     fi
     parse_entry "$on_line" || continue
-    resolve_entry "$on_d" "$PE_CHUNK" "$2" && continue
-    [ "$RE_NAMED" -eq 1 ] || continue
-    block ORPHAN "$on_idx" "$on_ln" "entry '$PE_CHUNK' names a missing target"
+    resolve_entry "$on_d" "$PE_CHUNK" && continue
+    on_c=$PE_CHUNK
+    while [ -n "$on_c" ]; do
+      put "$WORK/cand" "$on_ln$US${on_c%/}$US$PE_CHUNK"
+      case "$on_c" in
+        *" "*) on_c=${on_c% *} ;;
+        *)     on_c= ;;
+      esac
+    done
   done < "$on_idx"
+  [ -s "$WORK/cand" ] || return 0
+  awk -F "$US" 'NR == FNR { want[$0] = 1; next }
+    ($2 in want) && !seen[$1]++ { print $1 FS $3 }' "$2" "$WORK/cand" > "$WORK/orph" ||
+    cld_die "awk failed matching the deleted names"
+  while IFS="$US" read -r on_ln on_chunk <&4; do
+    block ORPHAN "$on_idx" "$on_ln" "entry '$on_chunk' names a missing target"
+  done 4< "$WORK/orph"
 }
 
-# gone_path <path> -- a path the caller says was deleted or renamed away.
-# If it is really gone, its parent's index must not still name it; and
-# if its directory went with it, the grandparent's index must not still
-# name that directory, and so on up to the first directory still there.
-gone_path() {
-  go_g=$(cld_arg "$1")
-  case "$go_g" in
-    /*|..|../*|.) return 0 ;;   # outside the repo, or the repo itself
-  esac
-  skipped "$go_g" && return 0
-  while [ "$go_g" != "." ]; do
-    entry_exists "$go_g" && return 0
-    split_path "$go_g"
-    go_g=$SP_DIR
-    go_base=$SP_BASE
-    if is_dir_index "$SP_IDX"; then
-      orphans_naming "$SP_IDX" "$go_base"
+# check_gone <list> -- the paths in <list> (repo-relative, one per line)
+# were deleted or renamed away. For each one really gone, its parent's
+# index must not still name it; and if its directory went with it, the
+# grandparent's index must not still name that directory, and so on up
+# to the first directory still there. Every (index, name) question is
+# collected first, then each index is read once.
+check_gone() {
+  unskipped "$1" "$WORK/gone.kept"
+  : > "$WORK/pairs" || cld_die "cannot write in $WORK"
+  while IFS= read -r go_g <&3; do
+    case "$go_g" in
+      /*|..|../*|.) continue ;;   # outside the repo, or the repo itself
+    esac
+    while [ "$go_g" != "." ]; do
+      entry_exists "$go_g" && break
+      split_path "$go_g"
+      go_g=$SP_DIR
+      is_dir_index "$SP_IDX" && put "$WORK/pairs" "$SP_IDX$US$SP_BASE"
+    done
+  done 3< "$WORK/gone.kept"
+  [ -s "$WORK/pairs" ] || return 0
+  LC_ALL=C sort -u "$WORK/pairs" > "$WORK/pairs.s" ||
+    cld_die "cannot sort the deleted paths (out of temp space?)"
+  cg_last=
+  : > "$WORK/names"
+  while IFS="$US" read -r cg_idx cg_name <&3; do
+    if [ -n "$cg_last" ] && [ "$cg_idx" != "$cg_last" ]; then
+      orphans_naming "$cg_last" "$WORK/names"
+      : > "$WORK/names"
     fi
-  done
+    cg_last=$cg_idx
+    put "$WORK/names" "$cg_name"
+  done 3< "$WORK/pairs.s"
+  [ -z "$cg_last" ] || orphans_naming "$cg_last" "$WORK/names"
 }
 
-# Membership check of one ordinary file: an indexable file should have an
-# entry in its directory's index.cld.
-audit_member() {
-  am_f=$1
-  # -f follows a link, so a dangling symlink would be skipped entirely
-  # and never raise NOENTRY. It is still an entry in the directory.
-  { [ -f "$am_f" ] || [ -L "$am_f" ]; } || return 0
-  is_indexable "$am_f" || return 0
-  split_path "$am_f"
-  am_idx=$SP_IDX
-  am_base=$SP_BASE
-
-  # No directory index here -- a leaf dir indexed by its parent, or an
-  # index.cld exempted as another format. Silent here; a sweep owns
-  # the NOINDEX call.
-  is_dir_index "$am_idx" || return 0
-
-  has_entry "$am_idx" "$am_base" || \
-    block NOENTRY "$am_f" "-" "no entry in $am_idx"
-}
-
-process_file() {
-  skipped "$1" && return 0
-  case "${1##*/}" in
-    index.cld) audit_index_file "$1" ;;
-    *)         audit_member "$1" ;;
-  esac
+# check_files <list> -- the paths in <list>: each index.cld is audited in
+# full, and every other indexable file must have an entry in its
+# directory's index.cld (NOENTRY). The skip list is applied in one grep,
+# and every entry lookup in one awk.
+check_files() {
+  unskipped "$1" "$WORK/kept"
+  : > "$WORK/members" || cld_die "cannot write in $WORK"
+  while IFS= read -r cf_f <&3; do
+    case "${cf_f##*/}" in
+      index.cld) audit_index_file "$cf_f"; continue ;;
+    esac
+    # -f follows a link, so a dangling symlink would be skipped entirely
+    # and never raise NOENTRY. It is still an entry in the directory.
+    { [ -f "$cf_f" ] || [ -L "$cf_f" ]; } || continue
+    is_indexable "$cf_f" || continue
+    split_path "$cf_f"
+    # No directory index here, or one exempted as another format: silent
+    # here; a sweep owns the NOINDEX call.
+    is_dir_index "$SP_IDX" || continue
+    put "$WORK/members" "$SP_IDX$US$SP_BASE$US$cf_f"
+  done 3< "$WORK/kept"
+  [ -s "$WORK/members" ] || return 0
+  missing_entries "$WORK/members" "$WORK/missing"
+  while IFS= read -r cf_f <&3; do
+    split_path "$cf_f"
+    block NOENTRY "$cf_f" "-" "no entry in $SP_IDX"
+  done 3< "$WORK/missing"
 }
 
 # sweep_structure <root> -- the sweep-only warnings over the files in
@@ -411,12 +513,9 @@ process_file() {
 # tracked, unskipped file that its parent's index.cld (the parent being
 # at or below root) does not list.
 sweep_structure() {
-  ss_kept=$WORK/kept
+  ss_kept=$WORK/kept.s
   ss_dirs=$WORK/dirs
-  grep -v "$CLD_SKIP_RE" "$LIST" > "$ss_kept"
-  # 1 is "every path was skipped". Anything else means the pattern did
-  # not work; skip nothing, as skipped() does when its grep fails.
-  [ "$?" -le 1 ] || cp "$LIST" "$ss_kept"
+  unskipped "$LIST" "$ss_kept"
   # One line per directory: "X<dir>" holds indexable files, "S<dir>" is
   # a subdirectory of an in-scope parent.
   SS_ROOT=$1 SS_EXTS=$CLD_INDEXABLE_EXTS awk '
@@ -439,6 +538,7 @@ sweep_structure() {
       if ((ext in ix) && !(dir in seen_x) && inscope(dir)) { seen_x[dir] = 1; print "X" dir }
     }
   ' "$ss_kept" > "$ss_dirs" || cld_die "could not work out the directory structure"
+  : > "$WORK/subdirs" || cld_die "cannot write in $WORK"
   while IFS= read -r ss_l <&3; do
     ss_d=${ss_l#?}
     case "$ss_l" in
@@ -448,54 +548,64 @@ sweep_structure() {
       S*)
         [ -d "$ss_d" ] || continue
         split_path "$ss_d"
-        ss_pidx=$SP_IDX
-        ss_base=$SP_BASE
-        is_dir_index "$ss_pidx" || continue
-        has_entry "$ss_pidx" "$ss_base" || \
-          note NODENTRY "$ss_d/" - "no entry in $ss_pidx" ;;
+        is_dir_index "$SP_IDX" || continue
+        put "$WORK/subdirs" "$SP_IDX$US$SP_BASE$US$ss_d"
     esac
   done 3< "$ss_dirs"
+  [ -s "$WORK/subdirs" ] || return 0
+  missing_entries "$WORK/subdirs" "$WORK/nodentry"
+  while IFS= read -r ss_d <&3; do
+    split_path "$ss_d"
+    note NODENTRY "$ss_d/" - "no entry in $SP_IDX"
+  done 3< "$WORK/nodentry"
 }
 
 # sweep <dir> -- every tracked file at or below dir ("." is the whole
 # repo), then the structure warnings. The listing goes to a file and the
 # loop reads it in THIS shell: a loop at the end of a pipe runs in a
 # subshell, where a failed listing or a crash part way would vanish and
-# the run would still end "clean".
+# the run would still end "clean". A listing with nothing in it checked
+# nothing, and says so.
 sweep() {
   cld_ls_under "$1" > "$LIST" || \
     cld_die "could not list the tracked files under $1 -- nothing was checked"
-  while IFS= read -r sw_f <&3; do
-    process_file "$sw_f"
-  done 3< "$LIST"
+  if [ ! -s "$LIST" ]; then
+    if [ "$1" = . ]; then not_checked "no file here is tracked"
+    else not_checked "no file under $1/ is tracked (git add it first)"; fi
+    return 0
+  fi
+  check_files "$LIST"
   sweep_structure "$1"
 }
 
-# A directory argument is a git pathspec taken literally (cld_ls_under),
-# so lib, lib/, ./lib and an absolute path all name the same tree and
-# "." is the whole repo -- no regex is ever built from an argument.
-process_path() {
-  pp_p=$(cld_arg "$1")
-  if [ -d "$pp_p" ] && [ ! -L "$pp_p" ]; then
-    sweep "$pp_p"
-  else
-    process_file "$pp_p"
-  fi
-}
-
+: > "$WORK/files" || cld_die "cannot write in $WORK"
+: > "$WORK/gone" || cld_die "cannot write in $WORK"
 if [ "$#" -eq 0 ]; then
   sweep .
 else
+  # A directory argument is a git pathspec taken literally (cld_ls_under),
+  # so lib, lib/, ./lib and an absolute path all name the same tree and
+  # "." is the whole repo -- no regex is ever built from an argument. A
+  # symlink to a directory is an entry, not a tree to sweep.
   gone=0
   for t in "$@"; do
     if [ "$gone" -eq 0 ] && [ "$t" = "--gone" ]; then
       gone=1
-    elif [ "$gone" -eq 1 ]; then
-      gone_path "$t"
+      continue
+    fi
+    cld_arg_v "$t"
+    if [ "$gone" -eq 1 ]; then
+      put "$WORK/gone" "$CLD_ARG"
+    elif [ -d "$CLD_ARG" ] && [ ! -L "$CLD_ARG" ]; then
+      sweep "$CLD_ARG"
+    elif entry_exists "$CLD_ARG"; then
+      put "$WORK/files" "$CLD_ARG"
     else
-      process_path "$t"
+      not_checked "nothing at $t (a deleted path goes after --gone)"
     fi
   done
+  [ ! -s "$WORK/files" ] || check_files "$WORK/files"
+  [ ! -s "$WORK/gone" ] || check_gone "$WORK/gone"
 fi
 
 # Count AFTER de-duplicating: the same finding reached twice (a file
@@ -503,17 +613,22 @@ fi
 # finding, and the count must say what is printed.
 count=0
 if [ -s "$OUT" ]; then
-  LC_ALL=C sort -u "$OUT" > "$WORK/sorted"
+  LC_ALL=C sort -u "$OUT" > "$WORK/sorted" ||
+    cld_die "cannot sort the findings (out of temp space?) -- nothing was checked reliably"
   count=$(wc -l < "$WORK/sorted" | tr -d ' ')
   cat "$WORK/sorted"
   echo ""
   echo "index-audit: $count finding(s)"
 fi
 
-if [ -s "$BLOCK" ]; then
+if [ "$blocked" -ne 0 ]; then
   echo "index-audit: BLOCKED -- an index.cld is out of sync with its directory"
-  exit 1
 fi
+if [ "$unchecked" -ne 0 ]; then
+  echo "index-audit: NOT CHECKED -- an argument named nothing to check (see above)"
+  exit 2
+fi
+[ "$blocked" -eq 0 ] || exit 1
 
 [ "$count" -eq 0 ] && echo "index-audit: clean"
 exit 0

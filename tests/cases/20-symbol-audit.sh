@@ -566,6 +566,83 @@ out=$(cd "$d" && $SH $LK find Gone 2>&1); rc=$?
 expect_rc   "the lookup on that cld.conf exits 2 too" 2 "$rc"
 rm -rf "$d"
 
+section "symbol-audit: what it could not check, it says"
+
+d=$(fixture)
+out=$(cd "$d" && $SH $SA 2>&1); rc=$?
+expect_rc   "a repo with nothing tracked: the sweep checked nothing (exit 2)" 2 "$rc"
+expect_hit  "...and says so" "no file here is tracked" "$out"
+expect_miss "...and never says clean" "symbol-audit: clean" "$out"
+stage "$d"
+git -C "$d" commit -qm base >/dev/null 2>&1
+mkdir -p "$d/newdir"
+printf 'FILE newdir/nope.js\nF x   X\n' > "$d/newdir/x.cld"
+out=$(cd "$d" && $SH $SA newdir 2>&1); rc=$?
+expect_rc   "a directory with nothing tracked under it: exit 2" 2 "$rc"
+expect_hit  "...says nothing was checked there" "no file under newdir/ is tracked" "$out"
+expect_miss "...and never says clean" "symbol-audit: clean" "$out"
+out=$(cd "$d" && $SH $SA lbi/ 2>&1); rc=$?
+expect_rc   "a typo for a directory: exit 2" 2 "$rc"
+expect_hit  "...says there is nothing there" "nothing at lbi/" "$out"
+out=$(cd "$d" && $SH $SA newdir/x.cld 2>&1); rc=$?
+expect_rc   "control: the file named itself is checked (exit 1)" 1 "$rc"
+expect_hit  "control: ...SYM-DEAD" "SYM-DEAD newdir/x.cld" "$out"
+out=$(cd "$d" && $SH $SA --gone lbi.js 2>&1); rc=$?
+expect_rc   "control: a path after --gone is meant to be absent (exit 0)" 0 "$rc"
+rm -rf "$d"
+
+section "SYM-DUP: a tracked twin that is not in the work tree"
+
+# The gate builds only part of the staged tree, and a person may delete
+# a file without staging it: either way the twin is still tracked, and
+# its line 1 is read from the git index.
+d=$(fixture)
+mkdir -p "$d/lib"
+echo 'class Thing {}' > "$d/lib/thing.js"
+printf 'FILE lib/thing.js\nC Thing   A class\n' > "$d/lib/thing.js.cld"
+printf 'FILE lib/thing.js\r\nC Thing   The twin, CR-LF\r\n' > "$d/lib/twin.js.cld"
+stage "$d"
+out=$(cd "$d" && $SH $SA lib/thing.js.cld 2>&1); rc=$?
+expect_hit  "control: the twin on disk is SYM-DUP" "SYM-DUP  lib/thing.js.cld: target lib/thing.js also claimed by: lib/twin.js.cld" "$out"
+rm "$d/lib/twin.js.cld"
+out=$(cd "$d" && $SH $SA lib/thing.js.cld 2>&1); rc=$?
+expect_hit  "a tracked twin missing from the work tree is still SYM-DUP" "also claimed by: lib/twin.js.cld" "$out"
+expect_rc   "...and blocks (exit 1)" 1 "$rc"
+git -C "$d" rm -q --cached lib/twin.js.cld
+out=$(cd "$d" && $SH $SA lib/thing.js.cld 2>&1); rc=$?
+expect_miss "control: once untracked, it is no twin" "SYM-DUP" "$out"
+expect_rc   "control: ...exit 0" 0 "$rc"
+rm -rf "$d"
+
+section "symbol-audit: cost does not grow a process per path"
+
+d=$(fixture)
+mkdir -p "$d/lib"
+i=0
+while [ "$i" -lt 60 ]; do printf 'function f%s() {}\n' "$i" > "$d/lib/f$i.js"; i=$((i + 1)); done
+stage "$d"
+git -C "$d" commit -qm base >/dev/null 2>&1
+cb=$(mktemp -d "$CLD_TEST_ROOT/bin.XXXXXX")
+for c in awk grep sed sort; do
+  real=$(command -v "$c")
+  printf '#!/bin/sh\necho %s >> "%s"\nexec "%s" "$@"\n' "$c" "$cb/calls" "$real" > "$cb/$c"
+  chmod +x "$cb/$c"
+done
+args=$(cd "$d" && git ls-files lib)
+: > "$cb/calls"
+out=$(cd "$d" && PATH="$cb:$PATH" $SH $SA $args 2>&1); rc=$?
+expect_eq "control: every unindexed declarer warns" "60" "$(printf '%s\n' "$out" | grep -c '^SYM-MISS (warn) lib/f')"
+n=$(grep -c . "$cb/calls")
+if [ "$n" -le 20 ]; then ok "60 sources: a handful of processes, not one per file ($n)"
+else bad "60 sources: a handful of processes, not one per file" "$n calls"; fi
+: > "$cb/calls"
+out=$(cd "$d" && PATH="$cb:$PATH" $SH $SA --gone $(i=0; while [ "$i" -lt 60 ]; do echo "gone/g$i.js"; i=$((i + 1)); done) 2>&1); rc=$?
+expect_rc "control: 60 paths gone with no index left behind: exit 0" 0 "$rc"
+n=$(grep -c . "$cb/calls")
+if [ "$n" -le 20 ]; then ok "60 --gone paths: a handful of processes, not one per path ($n)"
+else bad "60 --gone paths: a handful of processes, not one per path" "$n calls"; fi
+rm -rf "$d" "$cb"
+
 section "symbol-lookup: find and dupecheck"
 
 d=$(fixture)

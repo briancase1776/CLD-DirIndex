@@ -34,8 +34,10 @@
 # alike.
 #
 # Exit code: 1 if any BLOCK-level finding, 2 if the check could not run
-# (a setup error: the gate blocks on that too), else 0. Warnings print
-# but never set the exit code.
+# (a setup error: the gate blocks on that too) or an argument named
+# nothing to check (a path that is not there, a directory with no tracked
+# file under it) -- a check that looked at nothing never says "clean";
+# else 0. Warnings print but never set the exit code.
 #
 # Findings (mechanical, no LLM):
 #   SYM-HDR   [BLOCK] a .cld whose line-1 token is not a known species.
@@ -51,7 +53,9 @@
 #             spelling (./x, x//y and x/ are x, x/y and x). Scoped to the
 #             checked files: pre-existing twins block only when one of
 #             them is touched (fix-what-you-touch), so the gate cannot
-#             hold unrelated commits hostage.
+#             hold unrelated commits hostage. A tracked .cld that is not
+#             in the work tree (deleted there, or left out of a gate's
+#             temp tree) is read from the git index, where it still is.
 #   SYM-DEAD  [BLOCK] a checked FILE-species .cld whose target path does
 #             not exist -- the index outlived (or never had) its source;
 #             or, for a --gone path, a <path>.cld still beside it.
@@ -117,6 +121,37 @@ trap 'exit 2' HUP INT TERM
 CR=$CLD_SYM_CR
 US=$CLD_SYM_US
 blocked=0
+unchecked=0
+
+# not_checked <message> -- an argument that named nothing to check. Said
+# at once, and the run exits 2 instead of ever reporting clean.
+not_checked() {
+  echo "symbol-audit: $1 -- nothing was checked there"
+  unchecked=1
+}
+
+# put <file> <line> -- append one line to a work file, or stop.
+put() {
+  printf '%s\n' "$2" >> "$1" || cld_die "cannot write $1 (out of temp space?)"
+}
+
+# grep_l <ERE> <list> <out> <what> -- append to <out> every file in <list>
+# holding a match, as ./path or /path: one grep -l per hundred files,
+# never one per file. A grep error is a setup error, named by <what>.
+grep_l() {
+  _gl_re=$1; _gl_in=$2; _gl_out=$3; _gl_what=$4
+  set --
+  while IFS= read -r _gl_f <&5; do
+    case $_gl_f in /*) : ;; *) _gl_f=./$_gl_f ;; esac
+    set -- "$@" "$_gl_f"
+    if [ "$#" -ge 100 ]; then _grep_l_run "$@"; set --; fi
+  done 5< "$_gl_in"
+  [ "$#" -eq 0 ] || _grep_l_run "$@"
+}
+_grep_l_run() {
+  grep -l -E -e "$_gl_re" "$@" >> "$_gl_out"
+  [ "$?" -le 1 ] || cld_die "grep failed with $_gl_what"
+}
 
 # Every loop below reads its list from a file on fd 3 and runs in THIS
 # shell, never at the end of a pipe: a crash inside the loop (set -u, a
@@ -159,6 +194,7 @@ decl_re() {
 : > "$W/gone"     # --gone paths
 if [ "$#" -eq 0 ]; then
   cld_ls_files > "$W/listed" || cld_die "cannot list tracked files"
+  [ -s "$W/listed" ] || not_checked "no file here is tracked"
 else
   gone_mode=0
   for arg in "$@"; do
@@ -166,18 +202,26 @@ else
       gone_mode=1
       continue
     fi
-    p=$(cld_arg "$arg")
+    cld_arg_v "$arg"
+    p=$CLD_ARG
     if [ "$gone_mode" -eq 1 ]; then
-      printf '%s\n' "$p" >> "$W/gone"
+      put "$W/gone" "$p"
     elif [ -d "$p" ] && [ ! -L "$p" ]; then
       # A directory argument is a literal git pathspec (cld_ls_under), so
       # lib, lib/, ./lib and an absolute path name the same tree. A
       # symlink to a directory is an entry, not a tree to sweep (the same
       # rule as index-audit); git lists only the link itself either way.
-      cld_ls_under "$p" >> "$W/listed" ||
+      cld_ls_under "$p" > "$W/dir" ||
         cld_die "cannot list tracked files under $p"
+      if [ -s "$W/dir" ]; then
+        cat "$W/dir" >> "$W/listed" || cld_die "cannot write $W/listed"
+      else
+        not_checked "no file under $p/ is tracked (git add it first)"
+      fi
+    elif [ -e "$p" ] || [ -L "$p" ]; then
+      put "$W/named" "$p"
     else
-      printf '%s\n' "$p" >> "$W/named"
+      not_checked "nothing at $arg (a deleted path goes after --gone)"
     fi
   done
 fi
@@ -331,14 +375,34 @@ if [ -s "$W/claims" ]; then
   pick "$W/all.cld" -e '\.cld$' "$W/all"
   cld_sym_keep "$W/all.cld"
   # "<raw target><US><index>" for every FILE-headed one ...
-  awk -v US="$US" '
+  : > "$W/unread"
+  CLD_SA_UNREAD="$W/unread" awk -v US="$US" '
     { q = ($0 ~ /^\//) ? $0 : "./" $0; l = ""
-      if ((getline l < q) > 0) {
+      r = (getline l < q)
+      if (r > 0) {
         sub(/\r$/, "", l)
         if (substr(l, 1, 5) == "FILE ") print substr(l, 6) US $0
-      }
+      } else if (r < 0) print $0 > ENVIRON["CLD_SA_UNREAD"]
       close(q) }' "$W/all.cld" > "$W/map.raw" </dev/null ||
     cld_die "awk failed reading the symbol indexes"
+  # ... and, for a tracked index that is not in the work tree (deleted
+  # there, or left out of a gate's temp tree), line 1 as the git index
+  # holds it: one git grep over the staged .cld blobs.
+  if [ -s "$W/unread" ] && [ "$CLD_IN_GIT" -eq 1 ]; then
+    git grep --cached -a -z -n -e '^FILE ' -- '*.cld' > "$W/grep.z"
+    [ "$?" -le 1 ] || cld_die "git grep failed reading the staged symbol indexes"
+    tr '\000' "$US" < "$W/grep.z" > "$W/grep.us" ||
+      cld_die "cannot convert the git grep output"
+    CLD_SA_UNREAD="$W/unread" awk -F "$US" -v US="$US" '
+      BEGIN {
+        u = ENVIRON["CLD_SA_UNREAD"]
+        while ((getline x < u) > 0) want[x] = 1
+        close(u)
+      }
+      $2 == "1" && ($1 in want) { l = $3; sub(/\r$/, "", l); print substr(l, 6) US $1 }
+    ' "$W/grep.us" </dev/null >> "$W/map.raw" ||
+      cld_die "awk failed reading the staged symbol indexes"
+  fi
   # ... with the target in the one spelling.
   : > "$W/map"
   while IFS="$US" read -r t i <&3; do
@@ -400,45 +464,67 @@ while IFS= read -r g <&3; do
 done 3< "$W/gone"
 
 # --- SYM-MISS (warn only): a declaring source with no symbol index ------
+# The candidates are the watched sources that are regular files with no
+# <name>.cld beside them. Each declaration test is one grep -l per
+# hundred files, and the languages of the candidates the js rule does not
+# hit are decided in one batch (cld_langs_of) -- never a process per file.
+: > "$W/miss.c"
+: > "$W/miss.hit"
 while IFS= read -r j <&3; do
   [ -f "$j" ] || continue
   [ -e "$j.cld" ] && continue
-  hit=0
-  if [ "$miss_js" -eq 1 ]; then
-    case "${j##*/}" in
-      *.*)
-        e=${j##*.}
-        for x in $CLD_SYM_MISS_EXTS; do
-          [ "$e" = "$x" ] || continue
-          grep -q -E -e "$CLD_DECL_RE" "./$j"
-          case $? in
-            0) hit=1 ;;
-            1) : ;;
-            *) cld_die "grep failed on $j with CLD_DECL_RE (check cld.conf)" ;;
-          esac
-          break
-        done ;;
-    esac
-  fi
-  if [ "$hit" -eq 0 ] && [ -n "$miss_other" ]; then
-    l=$(cld_lang_of "$j")
-    case " $miss_other " in
-      *" $l "*)
-        grep -q -E -e "$(decl_re "$l")" "./$j"
-        case $? in
-          0) hit=1 ;;
-          1) : ;;
-          *) cld_die "grep failed on $j" ;;
-        esac ;;
-    esac
-  fi
-  [ "$hit" -eq 1 ] && echo "SYM-MISS (warn) $j: declares symbols but has no $j.cld"
+  put "$W/miss.c" "$j"
 done 3< "$W/src"
+if [ -s "$W/miss.c" ]; then
+  if [ "$miss_js" -eq 1 ]; then
+    : > "$W/miss.js"
+    while IFS= read -r j <&3; do
+      case "${j##*/}" in
+        *.*)
+          e=${j##*.}
+          for x in $CLD_SYM_MISS_EXTS; do
+            if [ "$e" = "$x" ]; then put "$W/miss.js" "$j"; break; fi
+          done ;;
+      esac
+    done 3< "$W/miss.c"
+    grep_l "$CLD_DECL_RE" "$W/miss.js" "$W/miss.hit" "CLD_DECL_RE (check cld.conf)"
+  fi
+  if [ -n "$miss_other" ]; then
+    # what the js rule did not hit, by language
+    CLD_SA_HIT="$W/miss.hit" awk '
+      BEGIN {
+        h = ENVIRON["CLD_SA_HIT"]
+        while ((getline x < h) > 0) { sub(/^\.\//, "", x); hit[x] = 1 }
+        close(h)
+      }
+      !($0 in hit)' "$W/miss.c" </dev/null > "$W/miss.rest" ||
+      cld_die "awk failed sorting the SYM-MISS candidates"
+    cld_langs_of "$W/miss.rest" "$W/miss.lang"
+    for l in $miss_other; do
+      awk -F "$US" -v l="$l" '$2 == l { print $1 }' "$W/miss.lang" > "$W/miss.$l" ||
+        cld_die "awk failed sorting the SYM-MISS candidates"
+      grep_l "$(decl_re "$l")" "$W/miss.$l" "$W/miss.hit" "the $l declaration pattern"
+    done
+  fi
+  # reported in the candidates' order
+  CLD_SA_HIT="$W/miss.hit" awk '
+    BEGIN {
+      h = ENVIRON["CLD_SA_HIT"]
+      while ((getline x < h) > 0) { sub(/^\.\//, "", x); hit[x] = 1 }
+      close(h)
+    }
+    ($0 in hit) { print "SYM-MISS (warn) " $0 ": declares symbols but has no " $0 ".cld" }
+  ' "$W/miss.c" </dev/null || cld_die "awk failed reporting SYM-MISS"
+fi
 
 if [ "$blocked" -ne 0 ]; then
   echo "symbol-audit: BLOCKED -- a symbol index is lying about its" \
        "header, its target, its name, or its keys"
-  exit 1
 fi
+if [ "$unchecked" -ne 0 ]; then
+  echo "symbol-audit: NOT CHECKED -- an argument named nothing to check (see above)"
+  exit 2
+fi
+[ "$blocked" -eq 0 ] || exit 1
 echo "symbol-audit: clean"
 exit 0

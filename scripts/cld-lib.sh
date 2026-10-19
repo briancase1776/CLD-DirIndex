@@ -139,6 +139,18 @@ cld_arg() {
   cld_norm "$_cld_a"
 }
 
+# cld_arg_v <path> -- cld_arg without a subshell where it can be done
+# without one: sets CLD_ARG. A relative path already in the one spelling
+# (no ./ or ../ part, no doubled or trailing /) needs only the prefix --
+# the common case, and the only one the commit gate hands a checker, so a
+# commit of thousands of paths does not cost thousands of subshells.
+cld_arg_v() {
+  case $1 in
+    ''|/*|.|..|./*|../*|*/|*/.|*/..|*//*|*/./*|*/../*) CLD_ARG=$(cld_arg "$1") ;;
+    *) CLD_ARG=$CLD_PREFIX$1 ;;
+  esac
+}
+
 # cld_ls_files [pathspec...] -- tracked files, one repo-root-relative path
 # per line, exactly as named: -z, so git never C-quotes a path (non-ASCII,
 # a double quote, a backslash), and core.quotePath=false for good measure.

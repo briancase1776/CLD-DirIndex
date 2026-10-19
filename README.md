@@ -118,11 +118,16 @@ Blocking findings are the ones that cannot false-positive, or are scoped
 so tightly they may as well not. Everything judgment-shaped warns.
 
 Both checkers exit 0 when clean or when there are only warnings, 1 on a
-blocking finding, and 2 when they could not check at all (no repo, a
-failed file listing). A `cld.conf` pattern that grep rejects is exit 2
-in symbol-audit; index-audit prints grep's error and skips nothing. The
-gate blocks on anything but 0: a check that cannot run never reads as
-a check that passed.
+blocking finding, and 2 when they could not check: run inside a git
+directory with no work tree, a failed file listing, a finding that could
+not be recorded (temp space ran out), or an argument that named nothing
+to check (a path that is not there, a directory with nothing tracked
+under it). A check that looked at nothing never says `clean`. Outside
+any git repository a checker checks the plain directory you stand in,
+listing it with find(1). A `cld.conf` pattern that grep rejects is exit
+2 in symbol-audit; index-audit prints grep's error and skips nothing.
+The gate blocks on anything but 0: a check that cannot run never reads
+as a check that passed.
 
 `NOINDEX` and `NODENTRY` appear only in a sweep (no argument, or a
 directory argument), never at commit time, because the gate judges only
@@ -190,10 +195,13 @@ the shell never expands a `$` in it.
 
 Deletions are narrow. For a gone path the only questions asked are
 "does its parent's `index.cld` still name it?" (`ORPHAN`) and "is its
-`<path>.cld` still beside it?" (`SYM-DEAD`). A deletion never re-audits
-a whole index, so an honest commit is not blocked by someone else's old
-orphan in the same file. A commit that modifies an index owns everything
-in it.
+`<path>.cld` still beside it?" (`SYM-DEAD`); the deletion itself never
+re-audits a whole index. But a commit that modifies an index owns
+everything in it, and an honest deletion of a listed file modifies its
+index to drop the entry -- so an old orphan in that same index has to be
+fixed in that commit. What the narrow routing spares is the indexes a
+commit does not touch: deleting a file no index lists (a `.cld`, an
+unlisted asset) is never blocked by someone else's old orphan.
 
 `scripts/git-hooks/pre-commit --audit` runs the same checks over the
 same staged diff on demand, read-only: it prints how the diff was
@@ -265,8 +273,6 @@ missing newer keys, still works on those fallbacks.
 - A source file named exactly `index`, with no extension, cannot have
   a symbol index: its `<name>.cld` would be `index.cld`, which is always
   a directory index.
-- A checker argument that names nothing (a typo) is checked as a file
-  that is not there and reports clean.
 - The gate copies the whole index to a temp tree on every commit, so
   its cost grows with the size of the repo: a few seconds for tens of
   thousands of files.

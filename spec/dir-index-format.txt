@@ -85,6 +85,9 @@ NAMES WITH SPACES
   name by trying the entry's word prefixes, longest first, against what
   is really in the directory, so a ragged or overhanging entry is still
   read correctly.
+  A name holding two or more spaces in a row cannot be indexed: the gap
+  ends the name. Such a file is NOENTRY with no entry and ORPHAN with
+  one, so name it in CLD_SKIP_RE (cld.conf), or rename it.
 
 ENFORCEMENT
   scripts/index-audit/check.sh reads this format mechanically.
@@ -113,7 +116,8 @@ ENFORCEMENT
 
   An index.cld that is another format altogether, one that only shares
   the name, is exempted with CLD_NOT_DIR_INDEX_RE (cld.conf); its
-  directory then counts as having no index.
+  directory then counts as having no index: no ORPHAN, no NOENTRY, and,
+  since the name index.cld is already taken there, no NOINDEX either.
 
 EXAMPLE
   INDEX lib/

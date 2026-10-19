@@ -248,101 +248,46 @@ scan() {
   read -r nidx ndep < "$W/count" || cld_die "lost the index counts"
 }
 
-# langs <need-all> -- turn $W/hits into $W/hits.l, with a ninth field:
-# the language of the hit's index, for every hit when <need-all> is 1,
-# else only for the rdeps hits marked C. The order is cld-symbol.sh's: the
-# lang header line (field 7, from the scan), the target's #! line, its
-# extension, file(1) -- decided once per index. Every #! line is read by
-# one awk, and only after the shell has made sure the target is a
-# readable regular file (an awk can die reading a directory). file(1)
-# then runs once per hundred targets nothing else could place.
+# langs <need-all> -- the language of each hit's index, for every hit
+# when <need-all> is 1, else only for the rdeps hits marked C, into
+# $W/lmap as "target US lang". A hit whose index has a "lang" header line
+# (field 7, from the scan) needs nothing more; the rest go, once per
+# target, through cld_langs_of (cld-symbol.sh): the #! line, the
+# extension, file(1) -- one awk and one file(1) call per hundred targets,
+# never a process per hit.
 langs() {
-  : > "$W/rd"
-  : > "$W/need"
   if [ "$1" -eq 1 ]; then
     pick_need='$7 == ""'
   else
     pick_need='$7 == "" && $8 ~ /^C/'
   fi
-  awk -F "$US" "$pick_need" "$W/hits" > "$W/need" ||
+  awk -F "$US" "$CLD_SYM_LANG_AWK""$pick_need"' { print cls_norm($2) }' \
+      "$W/hits" </dev/null > "$W/need.all" ||
     cld_die "awk failed reading the hits"
-  while IFS="$US" read -r p t n letter k d hl how <&3; do
-    cld_sym_norm "$t"
-    if [ -f "$CLD_SYM_N" ] && [ -r "$CLD_SYM_N" ]; then
-      printf '%s\n' "$CLD_SYM_N" >> "$W/rd"
-    fi
-  done 3< "$W/need"
-  CLD_LK_RD="$W/rd" CLD_LANG_EXT_MAP=$CLD_LANG_EXT_MAP \
-  awk -F "$US" -v OFS="$US" -v all="$1" "$CLD_SYM_LANG_AWK"'
-    BEGIN {
-      rf = ENVIRON["CLD_LK_RD"]
-      while ((getline x < rf) > 0) rd[x] = 1
-      close(rf)
-    }
-    function langof(p, t, hl,   nt, l, g) {
-      if (p in seen) return seen[p]
-      g = hl
-      if (g == "") {
-        nt = cls_norm(t)
-        if (nt in rd) {
-          l = ""
-          if ((getline l < cls_dot(nt)) > 0) g = cls_bang(l)
-          close(cls_dot(nt))
-        }
-        if (g == "") g = cls_ext(nt)
-        if (g == "" && (nt in rd)) g = "?"
-      }
-      seen[p] = g
-      return g
-    }
-    { g = ""; if (all == 1 || substr($8, 1, 1) == "C") g = langof($1, $2, $7); print $0, g }
-  ' "$W/hits" </dev/null > "$W/hits.l" || cld_die "awk failed reading the targets"
-  # file(1), the last resort, for the targets marked "?"
-  : > "$W/fmap"
-  command -v file >/dev/null 2>&1 || return 0
-  awk -F "$US" "$CLD_SYM_LANG_AWK"'$9 == "?" { print cls_norm($2) }' "$W/hits.l" |
-    sort -u > "$W/ask" || cld_die "cannot list the targets for file(1)"
-  [ -s "$W/ask" ] || return 0
-  set --
-  while IFS= read -r t <&3; do
-    set -- "$@" "./$t"
-    if [ "$#" -ge 100 ]; then ask_file "$@"; set --; fi
-  done 3< "$W/ask"
-  [ "$#" -eq 0 ] || ask_file "$@"
+  : > "$W/lmap" || cld_die "cannot write in $W"
+  [ -s "$W/need.all" ] || return 0
+  LC_ALL=C sort -u "$W/need.all" > "$W/need" || cld_die "cannot sort the targets"
+  cld_langs_of "$W/need" "$W/lmap"
 }
 
-# ask_file <./target...> -- one file -b call; "target US lang" per target
-# to $W/fmap. file(1) prints one line per argument, in order.
-ask_file() {
-  file -b "$@" > "$W/fout" 2>/dev/null
-  exec 4< "$W/fout"
-  for t in "$@"; do
-    desc=
-    IFS= read -r desc <&4 || desc=
-    cld_lang_desc "$desc"
-    printf '%s%s%s\n' "${t#./}" "$US" "$CLD_SYM_LANG" >> "$W/fmap"
-  done
-  exec 4<&-
-}
-
-# show <format> -- print the hits in $W/hits.l whose language fits:
+# show <format> -- print the hits in $W/hits whose language fits:
 #   format name   "<T> <name>  in  <file>  --  <desc>", only the indexes
 #                 in $lang when one was asked for
 #   format rdeps  "<file>  I <token>  --  <desc>", Y hits and the C hits
 #                 the importing file's language makes a match
 # Sets shown to the number of lines printed.
 show() {
-  CLD_LK_FMAP="$W/fmap" CLD_LK_SHOWN="$W/shown" \
+  CLD_LK_LMAP="$W/lmap" CLD_LK_SHOWN="$W/shown" \
   awk -F "$US" -v fmt="$1" -v want="$lang" "$CLD_SYM_LANG_AWK"'
     BEGIN {
-      f = ENVIRON["CLD_LK_FMAP"]
-      while ((getline x < f) > 0) { split(x, a, FS); fl[a[1]] = a[2] }
+      f = ENVIRON["CLD_LK_LMAP"]
+      while ((getline x < f) > 0) { split(x, a, FS); lm[a[1]] = a[2] }
       close(f)
       n = 0
     }
     {
-      t = cls_norm($2); g = $9
-      if (g == "?") g = (t in fl) ? fl[t] : ""
+      t = cls_norm($2); g = $7
+      if (g == "") g = (t in lm) ? lm[t] : ""
       if (fmt == "name") {
         if (want != "" && g != want) next
         printf "%s %s  in  %s  --  %s\n", $4, $5, t, $6
@@ -355,7 +300,7 @@ show() {
       }
       n++
     }
-    END { print n > ENVIRON["CLD_LK_SHOWN"] }' "$W/hits.l" </dev/null ||
+    END { print n > ENVIRON["CLD_LK_SHOWN"] }' "$W/hits" </dev/null ||
     cld_die "awk failed printing the hits"
   read -r shown < "$W/shown" || cld_die "lost the hit count"
 }

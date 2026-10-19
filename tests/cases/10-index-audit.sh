@@ -469,6 +469,147 @@ expect_miss "every subdirectory listed: no NODENTRY" "NODENTRY" "$out"
 expect_hit  "control: ...and the sweep is clean" "index-audit: clean" "$out"
 rm -rf "$d"
 
+section "index-audit: what it could not check, it says"
+
+# --- an argument that names nothing checks nothing, and never says clean ---
+d=$(fixture)
+printf 'INDEX ./\nD scripts/    Toolkit\n' > "$d/index.cld"
+ia "$d"
+expect_rc   "a repo with nothing tracked: the sweep checked nothing (exit 2)" 2 "$rc"
+expect_hit  "...and says so" "no file here is tracked" "$out"
+expect_miss "...and never says clean" "index-audit: clean" "$out"
+stage "$d"
+git -C "$d" commit -qm base >/dev/null 2>&1
+mkdir -p "$d/newdir"
+printf 'INDEX newdir/\nF ghost.js   Not here\n' > "$d/newdir/index.cld"
+echo '// stray' > "$d/newdir/stray.js"
+ia "$d" newdir
+expect_rc   "a directory with nothing tracked under it: exit 2" 2 "$rc"
+expect_hit  "...says nothing was checked there" "no file under newdir/ is tracked" "$out"
+expect_miss "...and never says clean" "index-audit: clean" "$out"
+ia "$d" lbi/
+expect_rc   "a typo for a directory: exit 2" 2 "$rc"
+expect_hit  "...says there is nothing there" "nothing at lbi/" "$out"
+ia "$d" nofile.js
+expect_rc   "a typo for a file: exit 2" 2 "$rc"
+expect_miss "...and never says clean" "index-audit: clean" "$out"
+ia "$d" newdir/index.cld newdir/stray.js
+expect_rc   "control: the same files named one by one are checked (exit 1)" 1 "$rc"
+expect_hit  "control: ...ORPHAN" "ghost.js" "$out"
+expect_hit  "control: ...NOENTRY" "newdir/stray.js" "$out"
+ia "$d" --gone nofile.js
+expect_rc   "control: a path after --gone is meant to be absent (exit 0)" 0 "$rc"
+stage "$d"
+ia "$d" newdir
+expect_rc   "control: once tracked, the directory is swept (exit 1)" 1 "$rc"
+expect_hit  "control: ...and its ORPHAN found" "ghost.js" "$out"
+rm -rf "$d"
+
+# --- a directory named like an awk assignment (k=v) is a directory ---
+# Hive-style partitions: an index path handed to awk as an operand was
+# read as a variable assignment, and awk read stdin instead.
+d=$(fixture)
+mkdir -p "$d/year=2024/month=01"
+echo '// a' > "$d/year=2024/a.js"
+echo '// c' > "$d/year=2024/month=01/c.js"
+printf 'INDEX year=2024/\nF a.js        A\nD month=01/   January\n' > "$d/year=2024/index.cld"
+printf 'INDEX year=2024/month=01/\nF c.js   C\n' > "$d/year=2024/month=01/index.cld"
+printf 'INDEX ./\nD year=2024/   The partition\nD scripts/     Toolkit\n' > "$d/index.cld"
+stage "$d"
+out=$(cd "$d" && $SH "$IA" < /dev/null 2>&1); rc=$?
+expect_miss "k=v directories: the sweep finds their entries" "NOENTRY" "$out"
+expect_miss "k=v directories: ...and the D entry for month=01/" "NODENTRY" "$out"
+expect_rc   "k=v directories: the sweep is clean (exit 0)" 0 "$rc"
+out=$(cd "$d" && $SH "$IA" 'year=2024/a.js' < /dev/null 2>&1); rc=$?
+expect_rc   "k=v directories: a file argument is clean (exit 0)" 0 "$rc"
+out=$(cd "$d" && printf 'F zz.js   from stdin\n' | $SH "$IA" 'year=2024/a.js' 2>&1); rc=$?
+expect_rc   "k=v directories: stdin plays no part" 0 "$rc"
+echo '// b' > "$d/year=2024/b.js"
+stage "$d"
+out=$(cd "$d" && $SH "$IA" 'year=2024/b.js' < /dev/null 2>&1); rc=$?
+expect_hit  "control: an unlisted file there is NOENTRY" "NOENTRY  year=2024/b.js" "$out"
+printf 'INDEX year=2024/\nF a.js        A\nF b.js        B\n' > "$d/year=2024/index.cld"
+stage "$d"
+out=$(cd "$d" && $SH "$IA" < /dev/null 2>&1)
+expect_hit  "control: a k=v subdirectory missing from its parent is NODENTRY" "NODENTRY  year=2024/month=01/" "$out"
+rm -rf "$d"
+
+# --- a finding that cannot be recorded is a setup error, never clean ---
+d=$(fixture)
+mkdir -p "$d/lib"
+{ echo 'INDEX lib/'; i=0; while [ "$i" -lt 40 ]; do echo "F ghost$i.js   Not here"; i=$((i + 1)); done; } > "$d/lib/index.cld"
+stage "$d"
+ia "$d" lib/index.cld
+expect_rc   "control: forty ORPHANs block (exit 1)" 1 "$rc"
+shim=$(mktemp -d "$CLD_TEST_ROOT/shim.XXXXXX")
+real_mktemp=$(command -v mktemp)
+real_sort=$(command -v sort)
+if [ -c /dev/full ]; then
+  # every finding written to a full disk: the temp files are /dev/full
+  cat > "$shim/mktemp" <<EOF
+#!/bin/sh
+if [ "\${1:-}" = -d ]; then
+  t=\$("$real_mktemp" -d) || exit 1
+  ln -s /dev/full "\$t/out"; ln -s /dev/full "\$t/block"
+  echo "\$t"
+else
+  exec "$real_mktemp" "\$@"
+fi
+EOF
+  chmod +x "$shim/mktemp"
+  out=$(cd "$d" && PATH="$shim:$PATH" $SH "$IA" lib/index.cld 2>&1); rc=$?
+  expect_rc   "no temp space for the findings: exit 2" 2 "$rc"
+  expect_miss "no temp space for the findings: never clean" "index-audit: clean" "$out"
+  rm -f "$shim/mktemp"
+else
+  ok "no /dev/full here: the full-disk case is covered by the sort case below"
+fi
+printf '#!/bin/sh\necho "sort: write error" >&2\nexit 2\n' > "$shim/sort"
+chmod +x "$shim/sort"
+out=$(cd "$d" && PATH="$shim:$PATH" $SH "$IA" lib/index.cld 2>&1); rc=$?
+expect_rc   "a failed sort of the findings: exit 2" 2 "$rc"
+expect_miss "a failed sort of the findings: no '0 finding(s)'" "0 finding(s)" "$out"
+expect_miss "a failed sort of the findings: never clean" "index-audit: clean" "$out"
+rm -rf "$d" "$shim"
+
+section "index-audit: cost does not grow a process per path"
+
+# A stand-in for every external command the checker might start per
+# path, counting calls: checking 60 files, or 60 deletions, must start a
+# handful of processes, not one or more per path.
+d=$(fixture)
+mkdir -p "$d/lib"
+{ echo 'INDEX lib/'; i=0; while [ "$i" -lt 60 ]; do echo "F f$i.js   F$i"; i=$((i + 1)); done; } > "$d/lib/index.cld"
+i=0
+while [ "$i" -lt 60 ]; do echo "// $i" > "$d/lib/f$i.js"; i=$((i + 1)); done
+echo '// stray' > "$d/lib/stray.js"
+stage "$d"
+git -C "$d" commit -qm base >/dev/null 2>&1
+cb=$(mktemp -d "$CLD_TEST_ROOT/bin.XXXXXX")
+for c in awk grep sed sort; do
+  real=$(command -v "$c")
+  printf '#!/bin/sh\necho %s >> "%s"\nexec "%s" "$@"\n' "$c" "$cb/calls" "$real" > "$cb/$c"
+  chmod +x "$cb/$c"
+done
+args=$(cd "$d" && git ls-files lib | grep -v index.cld)
+: > "$cb/calls"
+out=$(cd "$d" && PATH="$cb:$PATH" $SH "$IA" $args 2>&1); rc=$?
+expect_hit "control: the stray among 61 files is found" "NOENTRY  lib/stray.js" "$out"
+n=$(grep -c . "$cb/calls")
+if [ "$n" -le 10 ]; then ok "61 file arguments: a handful of processes, not one per path ($n)"
+else bad "61 file arguments: a handful of processes, not one per path" "$n calls"; fi
+git -C "$d" rm -q lib/f1.js lib/f2.js
+gone=$(i=0; while [ "$i" -lt 60 ]; do echo "lib/f$i.js"; i=$((i + 1)); done)
+: > "$cb/calls"
+out=$(cd "$d" && PATH="$cb:$PATH" $SH "$IA" --gone $gone 2>&1); rc=$?
+expect_hit "control: a deleted file's entry is found" "ORPHAN   lib/index.cld:3  entry 'f1.js'" "$out"
+expect_hit "control: ...and the other one" "ORPHAN   lib/index.cld:4  entry 'f2.js'" "$out"
+expect_miss "control: ...and no entry that still resolves" "f3.js" "$out"
+n=$(grep -c . "$cb/calls")
+if [ "$n" -le 10 ]; then ok "60 --gone arguments: a handful of processes, not one per path ($n)"
+else bad "60 --gone arguments: a handful of processes, not one per path" "$n calls"; fi
+rm -rf "$d" "$cb"
+
 section "index-audit: --gone (deleted and renamed-away paths)"
 
 d=$(fixture)
