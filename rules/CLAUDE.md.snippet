@@ -44,8 +44,8 @@ entries, what it depends on. Format and rules:
 ## The Gate
 
 `scripts/git-hooks/pre-commit` runs both checkers over the staged
-commit -- renames and deletions included -- and blocks a commit whose
-indexes have gone stale. Install it once per clone with
+commit -- renames, deletions and merges included -- and blocks a commit
+whose indexes have gone stale. Install it once per clone with
 `./scripts/git-hooks/install.sh`. Run `index-audit-partial` before
 committing to see a block coming.
 

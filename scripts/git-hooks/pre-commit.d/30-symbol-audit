@@ -18,7 +18,26 @@
 # nor a watched source are ignored by the checker.
 #
 # A missing or non-executable checker BLOCKS: a gate that cannot run must
-# never read as a gate that passed.
+# never read as a gate that passed. So does being run by a dispatcher
+# that does not export CLD_GATE_CONTRACT=2: an installed hook older than
+# this toolkit, which may judge the working tree instead of the commit,
+# hand over no deleted paths, or skip merges. The cure is to re-run
+# scripts/git-hooks/install.sh.
+#
+# The checker reads only the toolkit, the directories of the paths it is
+# handed, and the targets of the symbol indexes among them; and it takes
+# its arguments from a file (--paths-from), so the dispatcher hands over
+# a commit of any size in one call:
+# cld-gate: partial-tree
+# cld-gate: paths-from
+
+case ${CLD_GATE_CONTRACT:-} in
+  ''|*[!0-9]*|0|1)
+    echo "symbol-audit gate: BLOCKED -- the installed git hook is older than" \
+         "this toolkit (it does not pass CLD_GATE_CONTRACT=2), so it may not" \
+         "judge what is being committed; re-run scripts/git-hooks/install.sh" >&2
+    exit 2 ;;
+esac
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || {
   echo "symbol-audit gate: BLOCKED -- not inside a git work tree" >&2

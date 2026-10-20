@@ -24,9 +24,15 @@ Procedure:
      shows as its old name gone and its new name present.
    - The findings of every check, then the verdict: "would let this
      commit through" (exit 0) or "would BLOCK" (exit 1).
-   - Exit 2, or a line saying a check "could not check", is a broken
-     setup (a missing or non-executable checker, a tree that could not
-     be built) -- report it as that, never as a clean result.
+   - Exit 2 is a broken setup, not a verdict on the indexes: a check
+     that "could not check", one that "is not executable" or "is not a
+     file", a commit that "removes the check" HEAD runs or lacks the
+     toolkit, a tree that could not be built. Report it as that, never
+     as a clean or a blocked result.
+   - A "note:" that no hook is installed, or that the installed one is
+     foreign or not the dispatcher in this commit, means a real commit
+     is not judged the way this audit was: say so, and point at
+     scripts/git-hooks/install.sh.
 
 3. Separate blocking findings from advisory ones:
    - ORPHAN [BLOCK]: an index.cld entry names something that is not in

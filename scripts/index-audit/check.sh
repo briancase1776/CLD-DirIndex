@@ -10,6 +10,11 @@
 #   scripts/index-audit/check.sh [f1 ...] --gone g1 g2 ...
 #                                            # g1 g2 ... were deleted or
 #                                            # renamed away
+#   scripts/index-audit/check.sh --paths-from FILE
+#                                            # the same arguments, one per
+#                                            # line in FILE (how the gate
+#                                            # hands over a commit of any
+#                                            # size in one call)
 #
 # The pre-commit gate passes the STAGED paths as args -- surgical, "you
 # touched X, is X's index still true?" -- and the paths the commit
@@ -580,30 +585,44 @@ sweep() {
 
 : > "$WORK/files" || cld_die "cannot write in $WORK"
 : > "$WORK/gone" || cld_die "cannot write in $WORK"
+
+# take_arg <arg> -- one argument, from the command line or a --paths-from
+# file. A directory argument is a git pathspec taken literally
+# (cld_ls_under), so lib, lib/, ./lib and an absolute path all name the
+# same tree and "." is the whole repo -- no regex is ever built from an
+# argument. A symlink to a directory is an entry, not a tree to sweep.
+gone=0
+take_arg() {
+  if [ "$gone" -eq 0 ] && [ "$1" = "--gone" ]; then
+    gone=1
+    return 0
+  fi
+  cld_arg_v "$1"
+  if [ "$gone" -eq 1 ]; then
+    put "$WORK/gone" "$CLD_ARG"
+  elif [ -d "$CLD_ARG" ] && [ ! -L "$CLD_ARG" ]; then
+    sweep "$CLD_ARG"
+  elif entry_exists "$CLD_ARG"; then
+    put "$WORK/files" "$CLD_ARG"
+  else
+    not_checked "nothing at $1 (a deleted path goes after --gone)"
+  fi
+}
+
 if [ "$#" -eq 0 ]; then
   sweep .
 else
-  # A directory argument is a git pathspec taken literally (cld_ls_under),
-  # so lib, lib/, ./lib and an absolute path all name the same tree and
-  # "." is the whole repo -- no regex is ever built from an argument. A
-  # symlink to a directory is an entry, not a tree to sweep.
-  gone=0
-  for t in "$@"; do
-    if [ "$gone" -eq 0 ] && [ "$t" = "--gone" ]; then
-      gone=1
-      continue
-    fi
-    cld_arg_v "$t"
-    if [ "$gone" -eq 1 ]; then
-      put "$WORK/gone" "$CLD_ARG"
-    elif [ -d "$CLD_ARG" ] && [ ! -L "$CLD_ARG" ]; then
-      sweep "$CLD_ARG"
-    elif entry_exists "$CLD_ARG"; then
-      put "$WORK/files" "$CLD_ARG"
-    else
-      not_checked "nothing at $t (a deleted path goes after --gone)"
-    fi
-  done
+  if [ "$1" = "--paths-from" ]; then
+    [ "$#" -eq 2 ] || cld_die "--paths-from takes one file and nothing else"
+    [ -f "$2" ] && [ -r "$2" ] || cld_die "cannot read the argument file $2"
+    while IFS= read -r t <&4 || [ -n "$t" ]; do
+      take_arg "$t"
+    done 4< "$2"
+  else
+    for t in "$@"; do
+      take_arg "$t"
+    done
+  fi
   [ ! -s "$WORK/files" ] || check_files "$WORK/files"
   [ ! -s "$WORK/gone" ] || check_gone "$WORK/gone"
 fi

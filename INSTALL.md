@@ -120,55 +120,99 @@ an index before hunting, and update one in the same commit.
 
 ## 4. Install the gate
 
+Commit the toolkit first (step 1's files, with `cld.conf`), on its own
+or with your next change: the gate runs the copy of the toolkit in each
+commit, so it blocks a commit that leaves the toolkit out while the work
+tree has it, and the installer warns until it is tracked.
+
 ```sh
 ./scripts/git-hooks/install.sh
 ```
 
-Once per clone, and safe to re-run. It installs into the hooks directory
-git actually uses (`git rev-parse --git-path hooks`), which is the one
-shared directory of the main repo when run from a linked worktree, and
-`core.hooksPath` when that is set; it prints a warning in that case,
-because such a directory may be shared by other repos or sit inside the
-work tree.
+Once per clone, and safe to re-run. It installs the dispatcher as two
+hooks, `pre-commit` and `pre-merge-commit` (a merge that needs no hand
+resolution runs only `pre-merge-commit`, so without it every clean
+merge would skip the gate), into the hooks directory git actually uses
+(`git rev-parse --git-path hooks`). Without `core.hooksPath` that is the
+main repo's hooks directory, which every linked worktree shares, so one
+install covers them all. With `core.hooksPath` it is that directory, and
+the installer prints a warning, because such a directory may be shared
+by other repos or sit inside the work tree; a **relative**
+`core.hooksPath` (husky's `.husky/_` is one) is resolved against each
+work tree's own top, so every linked worktree has its own copy and needs
+its own install.
 
-A pre-existing foreign `pre-commit` hook is **chained**, not replaced:
-it is moved, unchanged, to `pre-commit.cld-chained` in the same hooks
-directory, and the dispatcher runs it first on every commit (its failure
-still blocks). A re-run never overwrites a chained hook or an older
-backup. If a second foreign hook appears over an existing chained one,
-the installer stops with exit 1 and touches neither, since only a
-person can say which should run. A `pre-commit.pre-cld` left by an older
-installer is pointed out, not adopted.
+A pre-existing foreign hook of either name is **chained**, not replaced:
+it is moved, unchanged, to `cld-chained/<name>` in the same hooks
+directory -- keeping its name -- and the dispatcher runs it first on
+every commit (its failure still blocks). It runs the way git would run
+it: a shell script (a `#!` line naming a POSIX-family shell, or a text
+file with none) with `$0` set to its original path, anything else, a
+compiled hook included, directly and under its own name. So a hook
+manager that dispatches on `basename "$0"` (husky, overcommit) or finds
+its files through `dirname "$0"` (husky) still works. A hook that is a
+symlink with a relative target is re-made in `cld-chained/` with one
+more `../`, so it still resolves. A hook chained by an earlier install
+as `<name>.cld-chained` is moved to `cld-chained/<name>`. A re-run never
+overwrites a chained hook or an older backup. If a second foreign hook appears over
+an existing chained one, the installer stops with exit 1 and touches
+neither, since only a person can say which should run. A
+`pre-commit.pre-cld` left by an older installer is pointed out, not
+adopted. husky rewrites its hooks directory when it installs, which
+drops the dispatcher again; with husky, the durable setup is a line in
+`.husky/pre-commit` (and `.husky/pre-merge-commit`) that runs
+`scripts/git-hooks/pre-commit`.
 
 **Already installed an older version? Re-run the installer.** The hook
-git runs is a copy, and an old copy keeps the old behaviour (it ignored
-deletions and renames and read the working tree) until it is replaced.
+git runs is a copy, and an old copy keeps the old behaviour (the oldest
+ignored deletions and renames and read the working tree; none installed
+`pre-merge-commit`). The toolkit's checks refuse to run under a copy
+that does not pass them `CLD_GATE_CONTRACT=2`, and block every commit
+with "re-run scripts/git-hooks/install.sh" until it is replaced;
+`--audit` also says when the installed hook differs from the dispatcher
+in the commit.
 
 To make it survive fresh clones without anyone remembering, merge
 [`rules/settings.json.snippet`](rules/settings.json.snippet) into the
 host repo's `.claude/settings.json`. It reinstalls the hooks on every
-Claude Code session start. Because every linked worktree shares one
-hooks directory, a session started in any worktree installs for all of
-them.
+Claude Code session start, so a session started in a worktree with a
+relative `core.hooksPath` installs there too.
 
-What the gate does on each commit, in short: run the chained hook;
-read the staged diff with renames off, so a rename is a deletion plus an
-addition; copy the index into a temp tree with `git checkout-index`
-(with `GIT_LFS_SKIP_SMUDGE=1` and `core.autocrlf=false`, so no LFS
-download and no line-ending conversion; `.gitattributes` filters still
-apply); and run each check there on the present paths, with the deleted
-ones after `--gone`. The checks and checkers that run are the copies in
-the commit itself. A very large commit is split into several calls so
-no argument list overflows. Cost grows with the repo, since the whole
-index is copied: about three seconds for thirty thousand files.
+What the gate does on each commit, in short: run the chained hook; read
+the staged diff with renames off, so a rename is a deletion plus an
+addition; take the checks from the commit, refusing a commit that drops
+one `HEAD` has (renumbering one is fine); build a temp tree from the
+index with `git checkout-index` (with `GIT_LFS_SKIP_SMUDGE=1` and
+`core.autocrlf=false`, so no LFS download and no line-ending conversion;
+`.gitattributes` filters still apply) holding the toolkit and every
+directory a staged or deleted path is in -- the staged files and the
+`.cld` files with their content, the other files there as empty
+placeholders -- plus the targets the staged symbol indexes name; and
+run each check there on the present paths, with the deleted ones after
+`--gone`. So the cost follows the size of the commit, not of the repo,
+and a file the commit does not touch is never checked out (a smudge
+filter that fails on it cannot block). The whole index is copied
+instead when a check would follow a symlink out of that tree (a staged
+symlink, a symlinked `.cld`, a symbol index whose target is or runs
+through one), when an index entry names a path below its own directory
+(`F sub/x.js`), and for a custom check in `pre-commit.d` that does not
+carry the line `# cld-gate: partial-tree`; that costs seconds on a big
+repo. A check without `# cld-gate: paths-from` is called with argument
+lists, several for a very large commit, and each line it prints is
+shown once.
 
 It blocks, loudly, when it cannot judge: a check that is not
 executable, a checker missing from the tree, a `pre-commit.d` with no
-checks, a commit that removes `pre-commit.d` while `HEAD` has it, a
-staged name holding a newline, a temp tree that cannot be built, and any
-check exit other than 0. A tree that has never had `pre-commit.d` (an
-old branch, another repo sharing a `core.hooksPath`) runs no `.cld`
-checks and says so.
+checks, a commit that removes `pre-commit.d` or a check `HEAD` has (or
+renames one to a name that is not a check), a commit made with the
+toolkit in the work tree but not in the commit, a staged name holding a
+newline, a temp tree that cannot be built, an installed hook older than
+the toolkit, and any check exit other than 0. These exit 2, a finding
+exits 1, and the footer says which it was (or that the chained hook
+failed). A tree that
+has never had `pre-commit.d`, in a work tree without one (an old branch,
+another repo sharing a `core.hooksPath`), runs no `.cld` checks and says
+so.
 
 To see a block coming, run the same checks over the staged diff without
 committing:
@@ -226,7 +270,9 @@ the toolkit to run this suite against that code.
 ## Uninstalling
 
 Find the hooks directory with `git rev-parse --git-path hooks`. Remove
-`pre-commit` there, and if `pre-commit.cld-chained` exists, move it back
-to `pre-commit`. Then delete the copied directories. Nothing else in the
-repo depends on the toolkit; the `.cld` files themselves are plain text
-and stay readable and useful on their own.
+`pre-commit` and `pre-merge-commit` there, and if `cld-chained/` holds a
+hook of either name, move it back (`mv cld-chained/pre-commit
+pre-commit`; a symlink with a relative target was re-made there with one
+more `../`, so re-make it without). Then delete the copied directories.
+Nothing else in the repo depends on the toolkit; the `.cld` files
+themselves are plain text and stay readable and useful on their own.

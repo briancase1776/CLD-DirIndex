@@ -180,18 +180,36 @@ the shell never expands a `$` in it.
 
 ## The commit gate
 
-`scripts/git-hooks/pre-commit` is a dispatcher. On every commit it:
+`scripts/git-hooks/pre-commit` is a dispatcher, installed as both the
+`pre-commit` and the `pre-merge-commit` hook (a merge that needs no hand
+resolution runs only the latter). On every commit and merge it:
 
-1. runs a foreign pre-commit hook that `install.sh` found and chained,
-   first, because it may re-stage files; its failure blocks;
+1. runs a foreign hook that `install.sh` found and chained, first,
+   because it may re-stage files; its failure blocks. A chained hook
+   runs the way git would run it and keeps its name: a shell script
+   with `$0` set to its original path, anything else (a compiled hook
+   included) directly, as `cld-chained/<name>`. So a hook manager that
+   dispatches on `basename "$0"` (husky, overcommit) or finds its files
+   through `dirname "$0"` (husky) keeps working;
 2. reads the staged diff with renames off, so a rename arrives as a
    deletion plus an addition and nothing is dropped;
-3. copies the index (exactly what is being committed) into a temp tree
-   with `git checkout-index`, so unstaged edits and untracked files
-   cannot change the answer;
-4. runs every `NN-name` check in `scripts/git-hooks/pre-commit.d/` from
+3. runs the checks in the commit itself, and blocks a commit that
+   deletes a check `HEAD` has or renames it to a name that is not a
+   check, or that lacks the toolkit the work tree has;
+4. copies what the checks read of the index (exactly what is being
+   committed) into a temp tree with `git checkout-index`, so unstaged
+   edits and untracked files cannot change the answer: the toolkit,
+   each directory a staged or deleted path is in (the rest of those
+   directories as empty placeholders), and the targets the staged symbol
+   indexes name. The cost follows the size of the change, not of the
+   repo. The whole index is copied only when a check would follow a
+   symlink out of that tree, when an index entry names a path below its
+   own directory, or for a custom check that does not declare it reads
+   no more than the toolkit's checks do;
+5. runs every `NN-name` check in `scripts/git-hooks/pre-commit.d/` from
    that tree, handing it the present paths and, after `--gone`, the
-   deleted ones.
+   deleted ones -- the toolkit's two checks in one call, from a file,
+   however large the commit.
 
 Deletions are narrow. For a gone path the only questions asked are
 "does its parent's `index.cld` still name it?" (`ORPHAN`) and "is its
@@ -205,8 +223,11 @@ unlisted asset) is never blocked by someone else's old orphan.
 
 `scripts/git-hooks/pre-commit --audit` runs the same checks over the
 same staged diff on demand, read-only: it prints how the diff was
-routed and the verdict, and never runs a chained hook. The
-`index-audit-partial` skill runs exactly that.
+routed and the verdict, says when the installed hook is missing, foreign
+or out of date, and never runs a chained hook. It exits 0 (would pass),
+1 (would block on a finding) or 2 (a check could not run: a broken
+setup, not a verdict on the indexes). The `index-audit-partial` skill
+runs exactly that.
 
 There is no sanctioned bypass. The rule is: fix the index.
 
@@ -273,6 +294,10 @@ missing newer keys, still works on those fallbacks.
 - A source file named exactly `index`, with no extension, cannot have
   a symbol index: its `<name>.cld` would be `index.cld`, which is always
   a directory index.
-- The gate copies the whole index to a temp tree on every commit, so
-  its cost grows with the size of the repo: a few seconds for tens of
-  thousands of files.
+- The gate's cost follows the commit, not the repo: it builds only the
+  directories a commit touches. On one test machine a one-line commit
+  in a repo of 40,000 files took about 0.6 s through the gate, against
+  5 to 14 s when it copied the whole index (machine-dependent figures).
+  A commit that needs the whole tree (see the gate's step 4), or a
+  check in `pre-commit.d` that does not say it reads only what the
+  toolkit's checks read, pays that old cost.

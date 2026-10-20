@@ -18,6 +18,11 @@
 #   scripts/symbol-audit/check.sh dir/        # sweep a directory
 #   scripts/symbol-audit/check.sh             # whole project (git ls-files)
 #   scripts/symbol-audit/check.sh [f1 ...] --gone p1 p2 ...
+#   scripts/symbol-audit/check.sh --paths-from FILE
+#                                             # the same arguments, one
+#                                             # per line in FILE (how the
+#                                             # gate hands over a commit
+#                                             # of any size in one call)
 #
 # The pre-commit hook passes the STAGED files as args -- surgical, "you
 # touched X, is X still a truthful index?". Args that are neither a .cld
@@ -192,37 +197,49 @@ decl_re() {
 : > "$W/listed"   # tracked files under a dir argument (or the sweep)
 : > "$W/named"    # explicit file arguments
 : > "$W/gone"     # --gone paths
+# take_arg <arg> -- one argument, from the command line or a --paths-from
+# file.
+gone_mode=0
+take_arg() {
+  if [ "$gone_mode" -eq 0 ] && [ "$1" = "--gone" ]; then
+    gone_mode=1
+    return 0
+  fi
+  cld_arg_v "$1"
+  p=$CLD_ARG
+  if [ "$gone_mode" -eq 1 ]; then
+    put "$W/gone" "$p"
+  elif [ -d "$p" ] && [ ! -L "$p" ]; then
+    # A directory argument is a literal git pathspec (cld_ls_under), so
+    # lib, lib/, ./lib and an absolute path name the same tree. A
+    # symlink to a directory is an entry, not a tree to sweep (the same
+    # rule as index-audit); git lists only the link itself either way.
+    cld_ls_under "$p" > "$W/dir" ||
+      cld_die "cannot list tracked files under $p"
+    if [ -s "$W/dir" ]; then
+      cat "$W/dir" >> "$W/listed" || cld_die "cannot write $W/listed"
+    else
+      not_checked "no file under $p/ is tracked (git add it first)"
+    fi
+  elif [ -e "$p" ] || [ -L "$p" ]; then
+    put "$W/named" "$p"
+  else
+    not_checked "nothing at $1 (a deleted path goes after --gone)"
+  fi
+}
+
 if [ "$#" -eq 0 ]; then
   cld_ls_files > "$W/listed" || cld_die "cannot list tracked files"
   [ -s "$W/listed" ] || not_checked "no file here is tracked"
+elif [ "$1" = "--paths-from" ]; then
+  [ "$#" -eq 2 ] || cld_die "--paths-from takes one file and nothing else"
+  [ -f "$2" ] && [ -r "$2" ] || cld_die "cannot read the argument file $2"
+  while IFS= read -r arg <&4 || [ -n "$arg" ]; do
+    take_arg "$arg"
+  done 4< "$2"
 else
-  gone_mode=0
   for arg in "$@"; do
-    if [ "$gone_mode" -eq 0 ] && [ "$arg" = "--gone" ]; then
-      gone_mode=1
-      continue
-    fi
-    cld_arg_v "$arg"
-    p=$CLD_ARG
-    if [ "$gone_mode" -eq 1 ]; then
-      put "$W/gone" "$p"
-    elif [ -d "$p" ] && [ ! -L "$p" ]; then
-      # A directory argument is a literal git pathspec (cld_ls_under), so
-      # lib, lib/, ./lib and an absolute path name the same tree. A
-      # symlink to a directory is an entry, not a tree to sweep (the same
-      # rule as index-audit); git lists only the link itself either way.
-      cld_ls_under "$p" > "$W/dir" ||
-        cld_die "cannot list tracked files under $p"
-      if [ -s "$W/dir" ]; then
-        cat "$W/dir" >> "$W/listed" || cld_die "cannot write $W/listed"
-      else
-        not_checked "no file under $p/ is tracked (git add it first)"
-      fi
-    elif [ -e "$p" ] || [ -L "$p" ]; then
-      put "$W/named" "$p"
-    else
-      not_checked "nothing at $arg (a deleted path goes after --gone)"
-    fi
+    take_arg "$arg"
   done
 fi
 
@@ -389,7 +406,10 @@ if [ -s "$W/claims" ]; then
   # there, or left out of a gate's temp tree), line 1 as the git index
   # holds it: one git grep over the staged .cld blobs.
   if [ -s "$W/unread" ] && [ "$CLD_IN_GIT" -eq 1 ]; then
-    git grep --cached -a -z -n -e '^FILE ' -- '*.cld' > "$W/grep.z"
+    # --sparse: in a sparse checkout, also the files outside its cone
+    sparse=
+    if git grep -h 2>&1 | grep -q -e '--sparse'; then sparse=--sparse; fi
+    git grep --cached $sparse -a -z -n -e '^FILE ' -- '*.cld' > "$W/grep.z"
     [ "$?" -le 1 ] || cld_die "git grep failed reading the staged symbol indexes"
     tr '\000' "$US" < "$W/grep.z" > "$W/grep.us" ||
       cld_die "cannot convert the git grep output"

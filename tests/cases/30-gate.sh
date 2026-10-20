@@ -18,25 +18,36 @@
 
 # --- helpers for this file -------------------------------------------------
 
-# stub_checkers <repo> <log> -- replace both checkers with stubs that log
-# every call to <log>: "CALL <name>", where they ran (TOP, PWD), how many
-# files their git sees in the index (LS), then one "ARG <arg>" per
-# argument. A stub exits with the number in <log>.rc if that file exists.
-stub_checkers() {
-  for _w in index-audit symbol-audit; do
-    cat > "$1/scripts/$_w/check.sh" <<EOF
+# stub_check <file> <name> <log> -- a stub that logs every call to <log>:
+# "CALL <name>", where it ran (TOP, PWD), how many files its git sees in
+# the index (LS), then one "ARG <arg>" per argument -- read from the file
+# when it is called as --paths-from FILE, which it notes as "VIA file".
+# It exits with the number in <log>.rc if that file exists.
+stub_check() {
+  cat > "$1" <<EOF
 #!/bin/sh
 {
-  printf 'CALL %s\n' '$_w'
+  printf 'CALL %s\n' '$2'
   printf 'TOP %s\n' "\$(git rev-parse --show-toplevel 2>&1)"
   printf 'PWD %s\n' "\$(pwd -P)"
   printf 'LS %s\n' "\$(git ls-files 2>/dev/null | wc -l | tr -d ' ')"
-  for a in "\$@"; do printf 'ARG %s\n' "\$a"; done
-} >> '$2'
-if [ -f '$2.rc' ]; then exit "\$(cat '$2.rc')"; fi
+  if [ "\${1:-}" = --paths-from ]; then
+    echo 'VIA file'
+    while IFS= read -r a; do printf 'ARG %s\n' "\$a"; done < "\$2"
+  else
+    for a in "\$@"; do printf 'ARG %s\n' "\$a"; done
+  fi
+} >> '$3'
+if [ -f '$3.rc' ]; then exit "\$(cat '$3.rc')"; fi
 exit 0
 EOF
-    chmod +x "$1/scripts/$_w/check.sh"
+  chmod +x "$1"
+}
+
+# stub_checkers <repo> <log> -- replace both checkers with stub_checks.
+stub_checkers() {
+  for _w in index-audit symbol-audit; do
+    stub_check "$1/scripts/$_w/check.sh" "$_w" "$2"
   done
 }
 
@@ -280,8 +291,17 @@ expect_hit "...and says why" "newline" "$out"
 expect_eq  "...and nothing landed" "$n" "$(commits "$d")"
 rm -rf "$d" "$d.log"
 
-# A huge commit is split into calls that each fit in ARG_MAX.
+# A huge commit: the toolkit's checks read the whole list from a file,
+# in one call; a check that does not say it can is handed it in argument
+# lists that each fit in ARG_MAX, and what it prints is shown once.
 d=$(stub_repo)
+stub_check "$d.plain" plain "$d.log"
+printf '#!/bin/sh\necho "plain: the same line from every call"\nexec "%s" "$@"\n' "$d.plain" \
+  > "$d/scripts/git-hooks/pre-commit.d/40-plain"
+chmod +x "$d/scripts/git-hooks/pre-commit.d/40-plain"
+git -C "$d" add scripts/git-hooks/pre-commit.d/40-plain
+git -C "$d" commit -qm "a plain check" --no-verify >/dev/null 2>&1
+: > "$d.log"
 long=$(printf '%0200d' 0)
 mkdir "$d/big"
 i=0
@@ -292,11 +312,17 @@ done
 stage "$d"
 try_commit "$d" "huge"
 expect_rc "a commit too big for one argument list still goes through" 0 "$rc"
-expect_eq "...every path reaches the check exactly once" "11000" \
+expect_eq "...every path reaches the toolkit's check exactly once" "11000" \
   "$(args_of "$d.log" index-audit | tr '|' '\n' | grep -c "^big/$long-[0-9]*\.txt\$")"
-n=$(calls_of "$d.log" index-audit)
-if [ "${n:-0}" -ge 2 ]; then ok "...in more than one call"; else bad "...in more than one call" "calls: $n"; fi
-rm -rf "$d" "$d.log"
+expect_eq "...in one call, from a file" "1" "$(calls_of "$d.log" index-audit)"
+expect_eq "...and every path reaches a plain check exactly once" "11000" \
+  "$(args_of "$d.log" plain | tr '|' '\n' | grep -c "^big/$long-[0-9]*\.txt\$")"
+n=$(calls_of "$d.log" plain)
+if [ "${n:-0}" -ge 2 ]; then ok "...in more than one argument list"; else bad "...in more than one argument list" "calls: $n"; fi
+expect_eq "...and a line it printed in every call is shown once" "1" \
+  "$(printf '%s\n' "$out" | grep -c 'plain: the same line from every call')"
+expect_hit "...and the dispatcher says why" "40-plain ran in" "$out"
+rm -rf "$d" "$d.log" "$d.plain"
 
 section "the gate judges the STAGED content"
 
@@ -422,8 +448,9 @@ stage "$d"
 try_commit "$d" "no toolkit here"
 expect_rc  "a tree that never had the toolkit commits" 0 "$rc"
 expect_hit "...and the hook says no checks ran" "no .cld checks run" "$out"
-printf '#!/bin/sh\necho "foreign says no"\nexit 1\n' > "$hd/pre-commit.cld-chained"
-chmod +x "$hd/pre-commit.cld-chained"
+mkdir -p "$hd/cld-chained"
+printf '#!/bin/sh\necho "foreign says no"\nexit 1\n' > "$hd/cld-chained/pre-commit"
+chmod +x "$hd/cld-chained/pre-commit"
 echo again >> "$d/readme.txt"
 stage "$d"
 try_commit "$d" "chained fails"
@@ -442,8 +469,8 @@ cp "$hd/pre-commit" "$d.foreign"
 out=$($SH "$d/scripts/git-hooks/install.sh" 2>&1); rc=$?
 expect_rc  "install over a foreign hook succeeds" 0 "$rc"
 expect_hit "...and says it chained it" "Chained" "$out"
-if cmp -s "$d.foreign" "$hd/pre-commit.cld-chained"; then ok "the foreign hook is kept, byte for byte, as pre-commit.cld-chained"
-else bad "the foreign hook is kept, byte for byte, as pre-commit.cld-chained" "missing or changed"; fi
+if cmp -s "$d.foreign" "$hd/cld-chained/pre-commit"; then ok "the foreign hook is kept, byte for byte, as cld-chained/pre-commit"
+else bad "the foreign hook is kept, byte for byte, as cld-chained/pre-commit" "missing or changed"; fi
 expect_hit "the dispatcher is now the pre-commit hook" "marker: cld-dispatcher" "$(cat "$hd/pre-commit" 2>&1)"
 echo '// one' > "$d/lib/one.js"
 printf 'INDEX lib/\nF known.js    Indexed\nF one.js      One\n' > "$d/lib/index.cld"
@@ -462,7 +489,7 @@ expect_eq  "the chained hook ran again" "2" "$(grep -c foreign "$d.flog" 2>/dev/
 out=$($SH "$d/scripts/git-hooks/install.sh" 2>&1); rc=$?
 expect_rc   "a re-run succeeds" 0 "$rc"
 expect_miss "a re-run chains nothing new" "Chained" "$out"
-if cmp -s "$d.foreign" "$hd/pre-commit.cld-chained"; then ok "a re-run leaves the chained hook as it was"
+if cmp -s "$d.foreign" "$hd/cld-chained/pre-commit"; then ok "a re-run leaves the chained hook as it was"
 else bad "a re-run leaves the chained hook as it was" "changed"; fi
 
 # Another tool replaced the dispatcher: two foreign hooks, so refuse and
@@ -474,13 +501,13 @@ expect_rc  "a second foreign hook over a chained one: install refuses" 1 "$rc"
 expect_hit "...and says so" "NOT INSTALLED" "$out"
 if cmp -s "$d.second" "$hd/pre-commit"; then ok "...the second foreign hook is untouched"
 else bad "...the second foreign hook is untouched" "overwritten"; fi
-if cmp -s "$d.foreign" "$hd/pre-commit.cld-chained"; then ok "...the earlier chained hook is untouched"
+if cmp -s "$d.foreign" "$hd/cld-chained/pre-commit"; then ok "...the earlier chained hook is untouched"
 else bad "...the earlier chained hook is untouched" "overwritten"; fi
 
 # A chained hook that fails blocks the commit.
 rm -f "$hd/pre-commit"
 $SH "$d/scripts/git-hooks/install.sh" >/dev/null 2>&1
-printf '#!/bin/sh\necho "foreign says no"\nexit 3\n' > "$hd/pre-commit.cld-chained"
+printf '#!/bin/sh\necho "foreign says no"\nexit 3\n' > "$hd/cld-chained/pre-commit"
 rm -f "$d/lib/stray.js"
 echo '// two' > "$d/lib/two.js"
 printf 'INDEX lib/\nF known.js    Indexed\nF one.js      One\nF two.js      Two\n' > "$d/lib/index.cld"
@@ -516,7 +543,7 @@ printf '#!/bin/sh\necho legacy\n' > "$hd/pre-commit.pre-cld"
 cp "$hd/pre-commit.pre-cld" "$d.legacy"
 out=$($SH "$d/scripts/git-hooks/install.sh" 2>&1); rc=$?
 expect_rc "install over an older dispatcher succeeds" 0 "$rc"
-if [ -e "$hd/pre-commit.cld-chained" ]; then bad "an older dispatcher is replaced, not chained" "it was chained"
+if [ -e "$hd/cld-chained/pre-commit" ]; then bad "an older dispatcher is replaced, not chained" "it was chained"
 else ok "an older dispatcher is replaced, not chained"; fi
 expect_hit "...by the current one" "marker: cld-dispatcher" "$(cat "$hd/pre-commit" 2>&1)"
 if cmp -s "$d.legacy" "$hd/pre-commit.pre-cld"; then ok "the legacy pre-commit.pre-cld is left as it was"
@@ -597,8 +624,9 @@ fi
 expect_rc  "the index-audit-partial skill's own command runs the audit" 1 "$rc"
 expect_hit "...and sees the same finding" "NOENTRY" "$out"
 # --audit never runs a chained hook, even through the installed copy
-printf '#!/bin/sh\necho ran >> "%s"\n' "$d.flog" > "$hd/pre-commit.cld-chained"
-chmod +x "$hd/pre-commit.cld-chained"
+mkdir -p "$hd/cld-chained"
+printf '#!/bin/sh\necho ran >> "%s"\n' "$d.flog" > "$hd/cld-chained/pre-commit"
+chmod +x "$hd/cld-chained/pre-commit"
 out=$(cd "$d" && $SH .git/hooks/pre-commit --audit 2>&1); rc=$?
 expect_hit "control: the installed copy audits too" "NOENTRY" "$out"
 if [ -e "$d.flog" ]; then bad "--audit does not run the chained hook" "it ran"
@@ -854,6 +882,577 @@ git -C "$d" rm -q -- -dash.js
 try_commit "$d" "delete -dash.js, entry stays"
 expect_rc  "deleting -dash.js whose entry stays is blocked" 1 "$rc"
 expect_hit "...as an ORPHAN" "entry '-dash.js' names a missing target" "$out"
+rm -rf "$d"
+
+section "merges are gated (pre-merge-commit)"
+
+# A merge that needs no hand resolution runs pre-merge-commit, never
+# pre-commit. Two honest branches can merge into a lie: one renames
+# lib/b.sh away, the other adds lib/b.sh.cld.
+d=$(lib_repo)
+echo 'b() { :; }' > "$d/lib/b.sh"
+printf 'INDEX lib/\nF known.js    Indexed\nF b.sh        B\n' > "$d/lib/index.cld"
+stage "$d"
+git -C "$d" commit -qm "b.sh" >/dev/null 2>&1
+expect_hit "the installer installs pre-merge-commit too" "marker: cld-dispatcher" "$(cat "$d/.git/hooks/pre-merge-commit" 2>&1)"
+git -C "$d" checkout -qb A
+git -C "$d" mv lib/b.sh lib/c.sh
+printf 'INDEX lib/\nF known.js    Indexed\nF c.sh        B, renamed\n' > "$d/lib/index.cld"
+stage "$d"
+try_commit "$d" "A renames b.sh"
+expect_rc "control: branch A's rename is honest" 0 "$rc"
+git -C "$d" checkout -q master
+git -C "$d" checkout -qb B
+printf 'FILE lib/b.sh\nF b   B\n' > "$d/lib/b.sh.cld"
+stage "$d"
+try_commit "$d" "B indexes b.sh"
+expect_rc "control: branch B's index is honest" 0 "$rc"
+git -C "$d" checkout -q A
+n=$(commits "$d")
+out=$(cd "$d" && git merge --no-edit B 2>&1); rc=$?
+expect_fail_rc() { if [ "$2" -ne 0 ]; then ok "$1"; else bad "$1" "wanted a non-zero exit, got 0"; fi; }
+expect_fail_rc "a clean merge into a lie is blocked" "$rc"
+expect_hit "...by the symbol gate" "SYM-DEAD lib/b.sh.cld" "$out"
+expect_eq  "...and no merge commit landed" "$n" "$(commits "$d")"
+git -C "$d" merge --abort >/dev/null 2>&1
+git -C "$d" checkout -q master
+git -C "$d" checkout -qb C
+mkdir -p "$d/docs"
+printf 'INDEX docs/\nF guide.md   Guide\n' > "$d/docs/index.cld"
+echo '# guide' > "$d/docs/guide.md"
+stage "$d"
+try_commit "$d" "C adds docs"
+git -C "$d" checkout -q A
+out=$(cd "$d" && git merge --no-edit C 2>&1); rc=$?
+expect_rc  "control: an honest clean merge goes through the gate" 0 "$rc"
+expect_hit "...which ran on it" "index-audit: clean" "$out"
+rm -rf "$d"
+
+section "a commit cannot switch off one of the gate's checks"
+
+# Each case carries a lie that only the check it removes would catch, so
+# a gate that let the removal through would let the lie land too.
+CHK=scripts/git-hooks/pre-commit.d
+
+# deleting 30-symbol-audit, with a left-behind symbol index (SYM-DEAD)
+d=$(lib_repo)
+git -C "$d" rm -q "$CHK/30-symbol-audit"
+printf 'INDEX %s/\nF 20-index-audit    Runs the directory-index checker\n' "$CHK" > "$d/$CHK/index.cld"
+git -C "$d" rm -q lib/known.js
+printf 'INDEX lib/\n' > "$d/lib/index.cld"
+stage "$d"
+n=$(commits "$d")
+try_commit "$d" "drop the symbol check, keep a dead symbol index"
+expect_rc  "a commit that deletes a check HEAD has is blocked" 1 "$rc"
+expect_hit "...loudly, by name" "removes the check $CHK/30-symbol-audit" "$out"
+expect_eq  "...and nothing landed" "$n" "$(commits "$d")"
+expect_hit "...and the checks it kept still ran" "index-audit: clean" "$out"
+rm -rf "$d"
+
+# renaming 20-index-audit to a name that is not a check, with an entry
+# left naming a deleted file (ORPHAN)
+d=$(lib_repo)
+git -C "$d" mv "$CHK/20-index-audit" "$CHK/off-20-index-audit"
+printf 'INDEX %s/\nF off-20-index-audit   Off\nF 30-symbol-audit      S\n' "$CHK" > "$d/$CHK/index.cld"
+git -C "$d" rm -q lib/known.js lib/known.js.cld
+stage "$d"
+n=$(commits "$d")
+try_commit "$d" "rename the index check away, keep an orphan entry"
+expect_rc  "a commit that renames a check to a non-check is blocked" 1 "$rc"
+expect_hit "...loudly, by name" "removes the check $CHK/20-index-audit" "$out"
+expect_eq  "...and nothing landed" "$n" "$(commits "$d")"
+rm -rf "$d"
+
+# renumbering a check keeps it: it still runs under its new name
+d=$(lib_repo)
+git -C "$d" mv "$CHK/20-index-audit" "$CHK/25-index-audit"
+printf 'INDEX %s/\nF 25-index-audit    Renumbered\nF 30-symbol-audit   S\n' "$CHK" > "$d/$CHK/index.cld"
+git -C "$d" rm -q lib/known.js lib/known.js.cld
+stage "$d"
+try_commit "$d" "renumber the index check, keep an orphan entry"
+expect_rc   "a renumbered check still runs, and blocks a lie" 1 "$rc"
+expect_hit  "...as an ORPHAN" "entry 'known.js' names a missing target" "$out"
+expect_miss "...and the renumbering itself is not blamed" "removes the check" "$out"
+printf 'INDEX lib/\n' > "$d/lib/index.cld"
+stage "$d"
+try_commit "$d" "renumber the index check, honestly"
+expect_rc  "control: an honest commit that renumbers a check lands" 0 "$rc"
+rm -rf "$d"
+
+section "the toolkit must be in the commit it judges"
+
+d=$(mktemp -d "$CLD_TEST_ROOT/plain.XXXXXX")
+git -C "$d" init -q
+git -C "$d" config user.email t@example.com
+git -C "$d" config user.name Test
+git -C "$d" config commit.gpgsign false
+mkdir -p "$d/lib"
+printf 'INDEX lib/\nF a.js   A\n' > "$d/lib/index.cld"
+echo '// a' > "$d/lib/a.js"
+stage "$d"
+git -C "$d" commit -qm base >/dev/null 2>&1
+cp -R "$TOOLKIT/scripts" "$d/"
+out=$($SH "$d/scripts/git-hooks/install.sh" 2>&1); rc=$?
+expect_rc  "install with the toolkit not yet committed succeeds" 0 "$rc"
+expect_hit "...and warns that it is not committed" "the toolkit is not committed yet" "$out"
+git -C "$d" rm -q lib/a.js
+n=$(commits "$d")
+try_commit "$d" "lying delete, toolkit untracked"
+expect_rc  "a commit without the toolkit, which the work tree has, is blocked" 1 "$rc"
+expect_hit "...and says to commit the toolkit" "commit scripts/ and cld.conf first" "$out"
+expect_eq  "...and nothing landed" "$n" "$(commits "$d")"
+printf 'INDEX lib/\n' > "$d/lib/index.cld"
+stage "$d"
+try_commit "$d" "adopt the toolkit, honestly"
+expect_rc  "control: the commit that adds the toolkit is judged by it, and lands" 0 "$rc"
+expect_hit "...and the checks ran" "index-audit: clean" "$out"
+rm -rf "$d"
+
+section "an installed dispatcher that is out of date"
+
+# A host that upgraded scripts/ but kept the hook an older toolkit
+# installed: that hook runs the drop-ins from the working tree and hands
+# them no deleted paths. The drop-ins refuse to run under it.
+d=$(lib_repo)
+cat > "$d/.git/hooks/pre-commit" <<'EOF'
+#!/bin/sh
+# @brief Pre-commit dispatcher: run every executable in
+# scripts/git-hooks/pre-commit.d/ in lexical order.
+repo=$(git rev-parse --show-toplevel)
+dispatch_dir="$repo/scripts/git-hooks/pre-commit.d"
+[ -d "$dispatch_dir" ] || exit 0
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+set --
+IFS='
+'
+for f in $staged; do [ -f "$f" ] && set -- "$@" "$f"; done
+unset IFS
+overall=0
+for check in "$dispatch_dir"/*; do
+  [ -x "$check" ] || continue
+  "$check" "$@" || overall=1
+done
+exit $overall
+EOF
+chmod +x "$d/.git/hooks/pre-commit"
+printf 'INDEX lib/\nF known.js    Indexed\nF gone.txt    Was here\n' > "$d/lib/index.cld"
+echo g > "$d/lib/gone.txt"
+stage "$d"
+git -C "$d" commit -qm "gone.txt" --no-verify >/dev/null 2>&1
+git -C "$d" rm -q lib/gone.txt
+out=$(cd "$d" && $SH scripts/git-hooks/pre-commit --audit 2>&1); rc=$?
+expect_hit "--audit sees the lie" "ORPHAN   lib/index.cld:3  entry 'gone.txt'" "$out"
+expect_hit "--audit says the installed hook is not this dispatcher" "is not the dispatcher in this commit" "$out"
+n=$(commits "$d")
+try_commit "$d" "lying delete through a stale hook"
+expect_rc  "a commit through an out-of-date installed hook is blocked" 1 "$rc"
+expect_hit "...saying to re-run the installer" "re-run scripts/git-hooks/install.sh" "$out"
+expect_eq  "...and nothing landed" "$n" "$(commits "$d")"
+$SH "$d/scripts/git-hooks/install.sh" >/dev/null 2>&1
+try_commit "$d" "lying delete through the current hook"
+expect_rc  "control: re-installed, the hook blocks the lie itself" 1 "$rc"
+expect_hit "...as an ORPHAN" "entry 'gone.txt' names a missing target" "$out"
+out=$(cd "$d" && $SH scripts/git-hooks/pre-commit --audit 2>&1)
+expect_miss "control: --audit is quiet about a current hook" "is not the dispatcher in this commit" "$out"
+rm -f "$d/.git/hooks/pre-commit"
+out=$(cd "$d" && $SH scripts/git-hooks/pre-commit --audit 2>&1)
+expect_hit "--audit says when no hook is installed at all" "no hook is installed" "$out"
+rm -rf "$d"
+
+section "chained hooks keep the name git runs them by"
+
+# A hook that dispatches on its own name, the way husky v4 and
+# overcommit do.
+d=$(lib_repo)
+hd=$d/.git/hooks
+rm -f "$hd/pre-commit" "$hd/pre-merge-commit"
+cat > "$hd/pre-commit" <<'EOF'
+#!/bin/sh
+case $(basename "$0") in
+  pre-commit)
+    if git diff --cached --name-only | grep -q FORBIDDEN; then
+      echo "lint(pre-commit): FORBIDDEN file staged"
+      exit 1
+    fi ;;
+  *) echo "lint: called as $(basename "$0"), nothing to do" ;;
+esac
+EOF
+chmod +x "$hd/pre-commit"
+out=$($SH "$d/scripts/git-hooks/install.sh" 2>&1)
+expect_hit "the foreign hook is chained under its own name" "$hd/cld-chained/pre-commit" "$out"
+echo f > "$d/FORBIDDEN"
+git -C "$d" add FORBIDDEN
+try_commit "$d" "forbidden"
+expect_rc  "a chained hook that dispatches on basename \$0 still runs, and blocks" 1 "$rc"
+expect_hit "...as pre-commit" "lint(pre-commit): FORBIDDEN file staged" "$out"
+expect_hit "...and the footer names the chained hook" "BLOCKED by the chained hook" "$out"
+expect_miss "...and does not blame index violations" "fix the violations above" "$out"
+git -C "$d" rm -q --cached FORBIDDEN
+rm -f "$d/FORBIDDEN"
+printf '#!/usr/bin/env sh\necho "chained \\$0: $0"\n' > "$hd/cld-chained/pre-commit"
+echo '// two' > "$d/lib/two.js"
+printf 'INDEX lib/\nF known.js    Indexed\nF two.js      Two\n' > "$d/lib/index.cld"
+stage "$d"
+try_commit "$d" "honest"
+expect_rc  "control: a passing chained hook lets an honest commit land" 0 "$rc"
+expect_hit "a #!/usr/bin/env sh hook sees its original path as \$0" "chained \$0: $hd/pre-commit" "$out"
+printf '#!/bin/sh -e\nfalse\necho "after false"\n' > "$hd/cld-chained/pre-commit"
+echo '// three' > "$d/lib/three.js"
+printf 'INDEX lib/\nF known.js    Indexed\nF two.js      Two\nF three.js    Three\n' > "$d/lib/index.cld"
+stage "$d"
+try_commit "$d" "sh -e"
+expect_rc   "a #!/bin/sh -e hook runs with -e: its failing command blocks" 1 "$rc"
+expect_miss "...and stops it there" "after false" "$out"
+rm -rf "$d"
+
+# husky v9: core.hooksPath=.husky/_ (relative), a hook that sources ./h,
+# which finds the user's script through dirname "$(dirname "$0")".
+d=$(lib_repo)
+rm -f "$d/.git/hooks/pre-commit" "$d/.git/hooks/pre-merge-commit"
+mkdir -p "$d/.husky/_"
+printf '*\n' > "$d/.husky/_/.gitignore"
+cat > "$d/.husky/_/h" <<'EOF'
+#!/usr/bin/env sh
+n=$(basename "$0")
+s=$(dirname "$(dirname "$0")")/$n
+[ ! -f "$s" ] && exit 0
+sh -e "$s"
+EOF
+printf '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n' > "$d/.husky/_/pre-commit"
+chmod +x "$d/.husky/_/h" "$d/.husky/_/pre-commit"
+printf 'echo "husky lint: failing"\nexit 1\n' > "$d/.husky/pre-commit"
+git -C "$d" config core.hooksPath .husky/_
+out=$($SH "$d/scripts/git-hooks/install.sh" 2>&1)
+expect_hit "husky: install says the hooks path is relative to each worktree" "core.hooksPath is RELATIVE" "$out"
+expect_hit "husky: ...and that husky will rewrite the directory" "husky hooks directory" "$out"
+echo '// two' > "$d/lib/two.js"
+printf 'INDEX lib/\nF known.js    Indexed\nF two.js      Two\n' > "$d/lib/index.cld"
+git -C "$d" add lib/two.js lib/index.cld
+n=$(commits "$d")
+try_commit "$d" "husky lint fails"
+expect_rc  "husky: the user's failing .husky/pre-commit still runs, and blocks" 1 "$rc"
+expect_hit "husky: ...its output shows" "husky lint: failing" "$out"
+expect_eq  "husky: ...and nothing landed" "$n" "$(commits "$d")"
+printf 'echo "husky lint: ok"\n' > "$d/.husky/pre-commit"
+try_commit "$d" "husky lint passes"
+expect_rc  "husky: control: a passing lint lets the commit land" 0 "$rc"
+expect_hit "husky: ...after running it" "husky lint: ok" "$out"
+rm -rf "$d"
+
+# an earlier install chained the hook as <name>.cld-chained: a re-run
+# moves it under its own name, unchanged
+d=$(lib_repo)
+hd=$d/.git/hooks
+printf '#!/bin/sh\necho old-layout\n' > "$hd/pre-commit.cld-chained"
+chmod +x "$hd/pre-commit.cld-chained"
+cp "$hd/pre-commit.cld-chained" "$d.old"
+out=$($SH "$d/scripts/git-hooks/install.sh" 2>&1); rc=$?
+expect_rc "a re-run over the old chained layout succeeds" 0 "$rc"
+if cmp -s "$d.old" "$hd/cld-chained/pre-commit" && [ ! -e "$hd/pre-commit.cld-chained" ]; then
+  ok "...and moves pre-commit.cld-chained to cld-chained/pre-commit, unchanged"
+else bad "...and moves pre-commit.cld-chained to cld-chained/pre-commit, unchanged" "not moved"; fi
+rm -rf "$d" "$d.old"
+
+# A foreign hook that is a symlink with a relative target (a hand-made
+# "ln -s ../../tools/hook.sh .git/hooks/pre-commit") still resolves, and
+# still runs, once it is set aside one directory down.
+d=$(lib_repo)
+hd=$d/.git/hooks
+rm -f "$hd/pre-commit" "$hd/pre-merge-commit"
+mkdir -p "$d/tools"
+printf '#!/bin/sh\necho "linked hook ran as $(basename "$0")"\nexit 1\n' > "$d/tools/hook.sh"
+chmod +x "$d/tools/hook.sh"
+ln -s ../../tools/hook.sh "$hd/pre-commit"
+out=$($SH "$d/scripts/git-hooks/install.sh" 2>&1); rc=$?
+expect_rc  "install over a relative symlink hook succeeds" 0 "$rc"
+if [ -L "$hd/cld-chained/pre-commit" ] && [ -f "$hd/cld-chained/pre-commit" ]; then
+  ok "...and the chained symlink still resolves"
+else bad "...and the chained symlink still resolves" "$(ls -l "$hd/cld-chained" 2>&1 | tr '\n' '|')"; fi
+echo '// two' > "$d/lib/two.js"
+printf 'INDEX lib/\nF known.js    Indexed\nF two.js      Two\n' > "$d/lib/index.cld"
+git -C "$d" add lib/two.js lib/index.cld
+n=$(commits "$d")
+try_commit "$d" "honest, but the linked hook says no"
+expect_rc  "a chained relative-symlink hook still runs, and blocks" 1 "$rc"
+expect_hit "...under its own name" "linked hook ran as pre-commit" "$out"
+expect_eq  "...and nothing landed" "$n" "$(commits "$d")"
+rm -rf "$d"
+
+# A compiled hook (no #! line, not text) is run the way git runs it:
+# directly, never read by a shell as a script.
+bin_true=
+bin_false=
+for b in /bin/true /usr/bin/true; do
+  if [ -f "$b" ] && [ -x "$b" ] && [ "$(dd if="$b" bs=2 count=1 2>/dev/null)" != '#!' ]; then
+    bin_true=$b; break
+  fi
+done
+for b in /bin/false /usr/bin/false; do
+  if [ -f "$b" ] && [ -x "$b" ] && [ "$(dd if="$b" bs=2 count=1 2>/dev/null)" != '#!' ]; then
+    bin_false=$b; break
+  fi
+done
+if [ -n "$bin_true" ] && [ -n "$bin_false" ]; then
+  d=$(lib_repo)
+  hd=$d/.git/hooks
+  mkdir -p "$hd/cld-chained"
+  cp "$bin_false" "$hd/cld-chained/pre-commit"
+  echo '// two' > "$d/lib/two.js"
+  printf 'INDEX lib/\nF known.js    Indexed\nF two.js      Two\n' > "$d/lib/index.cld"
+  stage "$d"
+  try_commit "$d" "a compiled chained hook that fails"
+  expect_rc   "a compiled chained hook that fails blocks" 1 "$rc"
+  expect_hit  "...and the footer names it" "BLOCKED by the chained hook" "$out"
+  expect_no_shell_error "...and no shell tried to read it as a script" "$out"
+  cp "$bin_true" "$hd/cld-chained/pre-commit"
+  try_commit "$d" "a compiled chained hook that passes"
+  expect_rc   "a compiled chained hook that passes lets an honest commit land" 0 "$rc"
+  rm -rf "$d"
+else
+  echo "  (no compiled true/false found: the compiled-hook case is not run here)"
+fi
+
+section "a check that could not run is exit 2, not a finding"
+
+d=$(stub_repo)
+echo '// g' > "$d/lib/g.js"
+git -C "$d" add lib/g.js
+git -C "$d" rm -q --cached scripts/index-audit/check.sh
+out=$(cd "$d" && $SH scripts/git-hooks/pre-commit --audit 2>&1); rc=$?
+expect_rc  "--audit with a checker missing from the commit: exit 2" 2 "$rc"
+expect_hit "...and the verdict says the setup is broken" "a check could not run" "$out"
+out=$(cd "$d" && $SH .git/hooks/pre-commit 2>&1); rc=$?
+expect_rc  "the hook itself with a checker missing: exit 2" 2 "$rc"
+git -C "$d" add scripts/index-audit/check.sh
+chmod -x "$d/scripts/git-hooks/pre-commit.d/20-index-audit"
+git -C "$d" add scripts/git-hooks/pre-commit.d/20-index-audit
+out=$(cd "$d" && $SH scripts/git-hooks/pre-commit --audit 2>&1); rc=$?
+expect_rc  "--audit with a check that is not executable: exit 2" 2 "$rc"
+expect_hit "...and says so" "is not executable" "$out"
+chmod +x "$d/scripts/git-hooks/pre-commit.d/20-index-audit"
+git -C "$d" add scripts/git-hooks/pre-commit.d/20-index-audit
+echo 1 > "$d.log.rc"
+out=$(cd "$d" && $SH scripts/git-hooks/pre-commit --audit 2>&1); rc=$?
+expect_rc  "control: a check that found something: exit 1" 1 "$rc"
+rm -f "$d.log.rc"
+rm -rf "$d" "$d.log"
+
+section "the gate builds only what the checks read"
+
+# A probe check that says it reads only the partial tree reports what it
+# finds there, and COUNTS it: a one-file commit in a repo of a couple of
+# hundred files materialises the toolkit and the four entries of the
+# one directory it touches -- the staged file and the .cld files with
+# their content, the sibling as an empty placeholder -- and nothing of
+# the directories it does not touch. (A count, not a stopwatch: the
+# cost of the gate is what it builds.)
+d=$(lib_repo)
+i=0
+while [ "$i" -lt 6 ]; do
+  mkdir -p "$d/far$i"
+  printf 'INDEX far%s/\n' "$i" > "$d/far$i/index.cld"
+  j=0
+  while [ "$j" -lt 30 ]; do
+    echo "far $i $j" > "$d/far$i/f$j.txt"
+    printf 'F f%s.txt   Far away\n' "$j" >> "$d/far$i/index.cld"
+    j=$((j + 1))
+  done
+  i=$((i + 1))
+done
+echo 'sibling content' > "$d/lib/sib.txt"
+printf 'INDEX lib/\nF known.js    Indexed\nF sib.txt     Sibling\n' > "$d/lib/index.cld"
+stage "$d"
+git -C "$d" commit -qm "far and sib" --no-verify >/dev/null 2>&1
+cat > "$d/scripts/git-hooks/pre-commit.d/40-probe" <<'EOF'
+#!/bin/sh
+# cld-gate: partial-tree
+[ "${CLD_GATE_CONTRACT:-}" = 2 ] || exit 2
+if [ -e far0/f0.txt ]; then echo "probe: far present"; else echo "probe: far absent"; fi
+if [ -f lib/sib.txt ] && [ ! -s lib/sib.txt ]; then echo "probe: sibling empty"; fi
+if [ -s lib/sib.txt ]; then echo "probe: sibling full"; fi
+n=$(find . -type f ! -path './scripts/*' | wc -l | tr -d ' ')
+m=$(find . -type f ! -path './scripts/*' -size +0 | wc -l | tr -d ' ')
+echo "probe: materialised $n files outside scripts/, $m with content"
+exit 0
+EOF
+chmod +x "$d/scripts/git-hooks/pre-commit.d/40-probe"
+printf 'F 40-probe   Probe\n' >> "$d/scripts/git-hooks/pre-commit.d/index.cld"
+stage "$d"
+git -C "$d" commit -qm "probe" --no-verify >/dev/null 2>&1
+all=$(git -C "$d" ls-files | grep -v -c '^scripts/')
+echo '// more' >> "$d/lib/known.js"
+git -C "$d" add lib/known.js
+try_commit "$d" "touch lib only"
+expect_rc  "control: a one-file commit lands" 0 "$rc"
+expect_hit "partial tree: a one-file commit materialises the touched directory's 4 entries, 3 with content" \
+  "probe: materialised 4 files outside scripts/, 3 with content" "$out"
+expect_hit "partial tree: a directory the commit does not touch is not built" "probe: far absent" "$out"
+expect_hit "partial tree: a sibling in a touched directory is there, as a placeholder" "probe: sibling empty" "$out"
+sed '/cld-gate: partial-tree/d' "$d/scripts/git-hooks/pre-commit.d/40-probe" > "$d/probe.tmp"
+cat "$d/probe.tmp" > "$d/scripts/git-hooks/pre-commit.d/40-probe"
+rm -f "$d/probe.tmp"
+git -C "$d" add scripts/git-hooks/pre-commit.d/40-probe
+echo '// more' >> "$d/lib/known.js"
+git -C "$d" add lib/known.js
+try_commit "$d" "an unmarked check"
+expect_hit "control: a check without the mark gets the whole tree ($all files)" \
+  "probe: materialised $all files outside scripts/, $all with content" "$out"
+expect_hit "control: ...the far directories included" "probe: far present" "$out"
+expect_hit "control: ...with every file's content" "probe: sibling full" "$out"
+rm -rf "$d"
+
+# A file the commit does not touch, whose smudge filter fails, blocks
+# nothing: it is never checked out.
+d=$(lib_repo)
+mkdir -p "$d/secret"
+printf 'secret/** filter=crypt\n' > "$d/.gitattributes"
+git -C "$d" config filter.crypt.clean cat
+git -C "$d" config filter.crypt.smudge false
+git -C "$d" config filter.crypt.required true
+echo key > "$d/secret/key.bin"
+stage "$d"
+git -C "$d" commit -qm "secret" --no-verify >/dev/null 2>&1
+echo '// more' >> "$d/lib/known.js"
+git -C "$d" add lib/known.js
+try_commit "$d" "honest, far from the secret"
+expect_rc  "an honest commit is not blocked by a failing filter elsewhere" 0 "$rc"
+rm -rf "$d"
+
+# The partial tree still answers like the whole one.
+d=$(lib_repo)
+mkdir -p "$d/other"
+printf 'INDEX other/\nF x.js   X\n' > "$d/other/index.cld"
+echo 'function x() {}' > "$d/other/x.js"
+printf 'FILE lib/known.js\nF known   A twin, in another directory\n' > "$d/other/twin.cld"
+stage "$d"
+git -C "$d" commit -qm "a twin far away" --no-verify >/dev/null 2>&1
+printf 'FILE lib/known.js\nF known      A function, described anew\n' > "$d/lib/known.js.cld"
+git -C "$d" add lib/known.js.cld
+try_commit "$d" "touch an index with a far twin"
+expect_rc   "partial tree: a twin in an untouched directory still blocks" 1 "$rc"
+expect_hit  "...as SYM-DUP" "SYM-DUP  lib/known.js.cld: target lib/known.js also claimed by: other/twin.cld" "$out"
+expect_miss "partial tree: a staged index's unstaged target has its content (no SYM-STALE)" "SYM-STALE" "$out"
+git -C "$d" rm -q other/twin.cld
+try_commit "$d" "twin removed"
+expect_rc   "control: without the twin it lands" 0 "$rc"
+printf 'FILE other/x.js\nF x   misplaced\n' > "$d/lib/misplaced.cld"
+git -C "$d" add lib/misplaced.cld
+try_commit "$d" "an index for a file in another directory"
+expect_hit  "partial tree: an index naming a target elsewhere is SYM-NAME" "SYM-NAME lib/misplaced.cld" "$out"
+expect_miss "partial tree: ...and its target, elsewhere, is found (no SYM-DEAD)" "SYM-DEAD" "$out"
+rm -rf "$d"
+
+# An entry that reaches below its own directory (F sub/x.js) names a
+# path the partial tree does not hold: the gate builds it all instead,
+# rather than call a real file an ORPHAN.
+d=$(lib_repo)
+mkdir -p "$d/lib/sub"
+printf 'INDEX lib/sub/\nF x.js   X\n' > "$d/lib/sub/index.cld"
+echo '// x' > "$d/lib/sub/x.js"
+printf 'INDEX lib/\nF known.js    Indexed\nD sub/        Sub\nF sub/x.js    Reaches below\n' > "$d/lib/index.cld"
+stage "$d"
+git -C "$d" commit -qm "deep entry" --no-verify >/dev/null 2>&1
+printf 'INDEX lib/\nF known.js    Indexed, edited\nD sub/        Sub\nF sub/x.js    Reaches below\n' > "$d/lib/index.cld"
+git -C "$d" add lib/index.cld
+try_commit "$d" "edit an index with a deep entry"
+expect_rc   "an entry naming a real file below its directory is no ORPHAN" 0 "$rc"
+expect_miss "...whatever part of the tree was built" "ORPHAN" "$out"
+printf 'INDEX lib/\nF known.js    Indexed\nD sub/        Sub\nF sub/y.js    Not there\n' > "$d/lib/index.cld"
+git -C "$d" add lib/index.cld
+try_commit "$d" "a deep entry naming nothing"
+expect_hit  "control: a deep entry naming nothing is an ORPHAN" "entry 'sub/y.js' names a missing target" "$out"
+rm -rf "$d"
+
+# A whole directory deleted, its <dir>.cld left beside it naming a file
+# that lives elsewhere: the partial tree fetches that target too, so the
+# gate does not call it dead.
+d=$(lib_repo)
+mkdir -p "$d/lib/sub" "$d/far"
+echo '// x' > "$d/lib/sub/x.js"
+printf 'INDEX lib/sub/\nF x.js   X\n' > "$d/lib/sub/index.cld"
+printf 'INDEX lib/\nF known.js    Indexed\nD sub/        Sub\n' > "$d/lib/index.cld"
+printf 'FILE far/z.js\nF z   Z\n' > "$d/lib/sub.cld"
+printf 'INDEX far/\nF z.js   Z\n' > "$d/far/index.cld"
+echo 'function z() {}' > "$d/far/z.js"
+stage "$d"
+git -C "$d" commit -qm "sub, and an index beside it" --no-verify >/dev/null 2>&1
+git -C "$d" rm -q -r lib/sub
+printf 'INDEX lib/\nF known.js    Indexed\n' > "$d/lib/index.cld"
+git -C "$d" add lib/index.cld
+try_commit "$d" "delete lib/sub honestly"
+expect_rc   "partial tree: a vanished directory's <dir>.cld naming a far target is not dead" 0 "$rc"
+expect_miss "...no SYM-DEAD" "SYM-DEAD" "$out"
+rm -rf "$d"
+
+# A staged symbol index that is a symlink is read through the link by
+# the checker, wherever it points: the gate builds the whole tree for it.
+d=$(lib_repo)
+mkdir -p "$d/far"
+printf 'INDEX far/\nF y.js   Y\n' > "$d/far/index.cld"
+echo 'function y() {}' > "$d/far/y.js"
+printf 'FILE far/y.js\nF y   Y\n' > "$d/far/y.js.cld"
+stage "$d"
+git -C "$d" commit -qm "far" --no-verify >/dev/null 2>&1
+ln -s ../far/y.js.cld "$d/lib/linked.js.cld"
+git -C "$d" add lib/linked.js.cld
+try_commit "$d" "a symlinked symbol index"
+expect_rc  "partial tree: a staged symlinked .cld is read through its link" 1 "$rc"
+expect_hit "...and judged by what it says (SYM-NAME)" "SYM-NAME lib/linked.js.cld" "$out"
+rm -rf "$d"
+
+# A symbol index naming a target through a symlinked directory: the
+# target exists in the commit, so it is not SYM-DEAD (it is misnamed).
+d=$(lib_repo)
+mkdir -p "$d/real"
+printf 'INDEX real/\nF r.js   R\n' > "$d/real/index.cld"
+echo 'function r() {}' > "$d/real/r.js"
+ln -s real "$d/linkdir"
+stage "$d"
+git -C "$d" commit -qm "real and a link to it" --no-verify >/dev/null 2>&1
+printf 'FILE linkdir/r.js\nF r   R\n' > "$d/lib/r.js.cld"
+git -C "$d" add lib/r.js.cld
+try_commit "$d" "an index naming its target through a link"
+expect_hit  "partial tree: a target reached through a symlinked directory is SYM-NAME" "SYM-NAME lib/r.js.cld" "$out"
+expect_miss "...and is found (no SYM-DEAD)" "SYM-DEAD" "$out"
+rm -rf "$d"
+
+# A sparse checkout: a twin index outside the cone still blocks, and the
+# commit is judged on what is staged.
+d=$(lib_repo)
+mkdir -p "$d/far"
+printf 'INDEX far/\nF x.txt   X\n' > "$d/far/index.cld"
+echo x > "$d/far/x.txt"
+printf 'FILE lib/known.js\nF known   A twin, outside the cone\n' > "$d/far/twin.cld"
+stage "$d"
+git -C "$d" commit -qm "a far twin" --no-verify >/dev/null 2>&1
+if git -C "$d" sparse-checkout set lib scripts >/dev/null 2>&1 && [ ! -e "$d/far/twin.cld" ]; then
+  printf 'FILE lib/known.js\nF known      A function, described anew\n' > "$d/lib/known.js.cld"
+  git -C "$d" add lib/known.js.cld
+  try_commit "$d" "touch an index whose twin is outside the cone"
+  expect_rc  "sparse checkout: a twin outside the cone still blocks" 1 "$rc"
+  expect_hit "...as SYM-DUP" "also claimed by: far/twin.cld" "$out"
+else
+  echo "  (git sparse-checkout is not available here: the sparse case is not run)"
+fi
+rm -rf "$d"
+
+section "a large rename: one call per check, each finding once"
+
+d=$(real_repo)
+long=$(printf '%0200d' 0)
+mkdir -p "$d/lib/big"
+i=0
+while [ "$i" -lt 1500 ]; do : > "$d/lib/big/$long-$i.png"; i=$((i + 1)); done
+printf 'INDEX lib/big/\n' > "$d/lib/big/index.cld"
+{ lib_without nothing; printf 'D big/      Many pictures\n'; } > "$d/lib/index.cld"
+stage "$d"
+git -C "$d" commit -qm "big" --no-verify >/dev/null 2>&1
+git -C "$d" mv lib/big lib/huge
+try_commit "$d" "rename big, D entry stays"
+expect_rc "a large directory rename whose D entry stays is blocked" 1 "$rc"
+expect_eq "...the ORPHAN is printed once" "1" "$(printf '%s\n' "$out" | grep -c "entry 'big/' names a missing target")"
+expect_eq "...and index-audit gives one verdict" "1" "$(printf '%s\n' "$out" | grep -c '^index-audit: BLOCKED')"
+expect_eq "...and symbol-audit one" "1" "$(printf '%s\n' "$out" | grep -c '^symbol-audit: ')"
 rm -rf "$d"
 
 finish
